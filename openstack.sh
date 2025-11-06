@@ -998,53 +998,37 @@ EOF
         if ! python3 -c "import keystone.auth.plugins.application_credential" 2>/dev/null; then
             echo -e "\033[33m警告: keystone application_credential插件缺失，尝试安装相关包...\033[0m"
             if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
-                sudo dnf install -y python3-keystone python3-oauthlib python3-requests-oauthlib
-            else
-                sudo yum install -y python3-keystone python3-oauthlib python3-requests-oauthlib
-            fi
-        fi
-
-        # 额外检查keystone认证插件
-        echo "额外检查Keystone认证插件..."
-        AUTH_PLUGINS=("password" "token" "external" "oauth1" "application_credential")
-        for plugin in "${AUTH_PLUGINS[@]}"; do
-            if ! python3 -c "import keystone.auth.plugins.$plugin" 2>/dev/null; then
-                echo "警告: Keystone $plugin 认证插件导入失败"
-                ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件导入失败")
-            fi
-        done
-        
-        # 验证stevedore库是否可用
-        echo "验证stevedore库..."
-        if ! python3 -c "import stevedore" 2>/dev/null; then
-            echo "警告: stevedore库导入失败，尝试安装..."
-            if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
-                sudo dnf install -y python3-stevedore
-            else
-                sudo yum install -y python3-stevedore
-            fi
-        fi
-
-        # 特别检查application_credential插件是否存在
-        if ! python3 -c "import keystone.auth.plugins.application_credential" 2>/dev/null; then
-            echo -e "\033[33m警告: keystone application_credential插件缺失，尝试安装相关包...\033[0m"
-            if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
                 sudo dnf install -y python3-keystone python3-oauthlib python3-requests-oauthlib python3-stevedore
             else
                 sudo yum install -y python3-keystone python3-oauthlib python3-requests-oauthlib python3-stevedore
             fi
         fi
 
+        # 检查所有认证插件
+        echo "检查所有Keystone认证插件..."
+        AUTH_PLUGINS=("password" "token" "external" "oauth1" "application_credential")
+        MISSING_PLUGINS=()
+        for plugin in "${AUTH_PLUGINS[@]}"; do
+            if ! python3 -c "import keystone.auth.plugins.$plugin" 2>/dev/null; then
+                echo "警告: Keystone $plugin 认证插件导入失败"
+                MISSING_PLUGINS+=("$plugin")
+            fi
+        done
+
+        # 如果有缺失的插件，尝试安装相关包
+        if [ ${#MISSING_PLUGINS[@]} -gt 0 ]; then
+            echo -e "\033[33m警告: 检测到缺失的认证插件，尝试安装相关包...\033[0m"
+            if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+                sudo dnf install -y python3-keystone python3-oauthlib python3-requests-oauthlib python3-stevedore
+            else
+                sudo yum install -y python3-keystone python3-oauthlib python3-requests-oauthlib python3-stevedore
+            fi
             
             # 再次检查插件
             echo "重新检查认证插件..."
             for plugin in "${AUTH_PLUGINS[@]}"; do
                 if ! python3 -c "import keystone.auth.plugins.$plugin" 2>/dev/null; then
                     echo -e "\033[31m严重错误: Keystone $plugin 认证插件仍然无法导入\033[0m"
-                fi
-            done
-        fi
-
                     ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件仍然无法导入")
                 fi
             done
@@ -1064,6 +1048,17 @@ EOF
         else
             echo -e "\033[31m错误: application_credential插件无法导入\033[0m"
             ERROR_LOG+=("[认证插件] application_credential插件无法导入")
+        fi
+
+        # 验证stevedore库是否可用
+        echo "验证stevedore库..."
+        if ! python3 -c "import stevedore" 2>/dev/null; then
+            echo "警告: stevedore库导入失败，尝试安装..."
+            if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+                sudo dnf install -y python3-stevedore
+            else
+                sudo yum install -y python3-stevedore
+            fi
         fi
 
         # 额外检查keystone配置文件中的驱动配置
