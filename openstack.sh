@@ -473,7 +473,7 @@ log_file = keystone.log
 debug = True
 verbose = True
 [database]
-connection = mysql+pymysql://keystone:${KEYSTONE_DBPASS}@${HOST_IP}/keystone
+connection = mysql+pymysql://keystone:${KEYSTONE_DBPASS}@controller/keystone
 [token]
 provider = fernet
 [fernet_tokens]
@@ -485,6 +485,8 @@ methods = external,password,token,oauth1,application_credential
 password = keystone.auth.plugins.password.Password
 token = keystone.auth.plugins.token.Token
 external = keystone.auth.plugins.external.DefaultDomain
+oauth1 = keystone.auth.plugins.oauth1.OAuth
+application_credential = keystone.auth.plugins.application_credential.ApplicationCredential
 [endpoint_filter]
 driver = sql
 [identity]
