@@ -48,7 +48,7 @@ get_host_ip() {
     if [ $count -eq 0 ]; then
         handle_error "未检测到有效IPv4地址，请检查网络配置" "IP检测"
     elif [ $count -eq 1 ]; then
-        echo "${ips[0]}"
+        echo "${ips[0]}" | tr -d '\n\r'  # 清理换行符
     else
         echo -e "\n检测到多个网络接口，请选择要使用的IP地址："
         for i in "${!ips[@]}"; do
@@ -56,7 +56,7 @@ get_host_ip() {
         done
         read -p "请输入序号: " index
         if [[ $index =~ ^[0-9]+$ ]] && [ $index -lt $count ]; then
-            echo "${ips[$index]}"
+            echo "${ips[$index]}" | tr -d '\n\r'  # 清理换行符
         else
             handle_error "无效的序号选择" "IP选择"
         fi
@@ -151,11 +151,11 @@ done
 
 # 遍历节点信息并添加到 hosts 文件
 for node in "${NODES[@]}"; do
-  ip=$(echo "$node" | awk '{print $1}')
-  hostname=$(echo "$node" | awk '{print $2}')
+  ip=$(echo "$node" | awk '{print $1}' | tr -d '\n\r')
+  hostname=$(echo "$node" | awk '{print $2}' | tr -d '\n\r')
 
   # 检查 hosts 文件中是否已存在相应的解析
-  if grep -q "$ip $hostname" /etc/hosts; then
+  if grep -Fq "$ip $hostname" /etc/hosts; then
     echo "Host entry for $hostname already exists in /etc/hosts."
   else
     # 添加节点的解析条目到 hosts 文件
@@ -192,12 +192,14 @@ fi
 # 遍历所有节点（如果有sshpass）
 if which sshpass &> /dev/null; then
     for node in "${NODES[@]}"; do
-        ip=$(echo "$node" | awk '{print $1}')
-        hostname=$(echo "$node" | awk '{print $2}')
+        ip=$(echo "$node" | awk '{print $1}' | tr -d '\n\r')
+        hostname=$(echo "$node" | awk '{print $2}' | tr -d '\n\r')
 
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
 
-        sshpass -p "$HOST_PASS" ssh-copy-id -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa.pub $hostname
+        # 修复：使用引号包裹hostname，避免空格问题
+        sshpass -p "$HOST_PASS" ssh-copy-id -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa.pub "$hostname" || \
+            echo -e "\033[31m错误详情：SSH密钥复制到 $hostname 失败，请检查网络连接和密码\033[0m"
 
         if [[ $? -eq 0 ]]; then
             echo "$(date '+%Y-%m-%d %H:%M:%S') - 成功复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
@@ -337,31 +339,47 @@ setup_database() {
     if ! systemctl is-active --quiet mariadb; then
         echo -e "\033[33m警告: MariaDB服务未运行，正在启动...\033[0m"
         systemctl start mariadb
-        sleep 3
+        sleep 5  # 增加等待时间
         if ! systemctl is-active --quiet mariadb; then
+            # 检查端口状态
+            if ! ss -tuln | grep ':3306' > /dev/null; then
+                echo -e "\033[31m错误: MariaDB服务启动失败，3306端口未监听\033[0m"
+            fi
+            # 检查错误日志
+            if [ -f /var/log/mariadb/mariadb.log ]; then
+                echo -e "\033[31mMariaDB最近10行错误日志：\033[0m"
+                tail -n 10 /var/log/mariadb/mariadb.log
+            fi
             handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
         fi
     fi
 
     # 检查是否已存在数据库
-    if mysql -u root -e "SHOW DATABASES LIKE '$db_name';" 2>/dev/null | grep -q "$db_name"; then
+    if mysql -u root --skip-password -e "SHOW DATABASES LIKE '$db_name';" 2>/dev/null | grep -q "$db_name"; then
         echo "数据库 $db_name 已存在，跳过创建"
     else
-        mysql -u root -e "CREATE DATABASE $db_name;" || \
+        # 使用--skip-password确保openEuler兼容性
+        if ! mysql -u root --skip-password -e "CREATE DATABASE $db_name;"; then
+            echo -e "\033[31m错误详情：MariaDB创建数据库失败，请检查权限\033[0m"
             handle_error "创建 $db_name 数据库失败，请检查MariaDB服务状态" "数据库创建"
+        fi
     fi
 
     # 检查用户是否存在
-    if mysql -u root -e "SELECT User FROM mysql.user WHERE User='$db_user';" 2>/dev/null | grep -q "$db_user"; then
+    if mysql -u root --skip-password -e "SELECT User FROM mysql.user WHERE User='$db_user';" 2>/dev/null | grep -q "$db_user"; then
         echo "数据库用户 $db_user 已存在，更新密码..."
-        mysql -u root -e "ALTER USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"
-        mysql -u root -e "ALTER USER '$db_user'@'%' IDENTIFIED BY '$db_pass';"
+        mysql -u root --skip-password -e "ALTER USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"
+        mysql -u root --skip-password -e "ALTER USER '$db_user'@'%' IDENTIFIED BY '$db_pass';"
     else
         # 创建用户并授权
-        mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'localhost' IDENTIFIED BY '$db_pass';" || \
+        if ! mysql -u root --skip-password -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"; then
+            echo -e "\033[31m错误详情：本地用户创建失败，请检查数据库权限\033[0m"
             handle_error "本地用户创建失败" "数据库授权"
-        mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'%' IDENTIFIED BY '$db_pass';" || \
+        fi
+        if ! mysql -u root --skip-password -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'%' IDENTIFIED BY '$db_pass';"; then
+            echo -e "\033[31m错误详情：远程用户创建失败，请检查数据库权限\033[0m"
             handle_error "远程用户创建失败" "数据库授权"
+        fi
     fi
 
     echo "✓ 数据库 $db_name 配置成功"
