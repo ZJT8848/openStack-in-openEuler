@@ -674,8 +674,13 @@ EOF
     MAX_RETRIES=5
     WAIT_TIME=5
         export OS_PROJECT_DOMAIN_NAME=Default
+        export OS_USER_DOMAIN_NAME=Default
+        export OS_PROJECT_NAME=admin
+        export OS_USERNAME=admin
+        export OS_PASSWORD=$ADMIN_PASS
         export OS_AUTH_URL=http://$HOST_IP:5000/v3
         export OS_IDENTITY_API_VERSION=3
+        export OS_IMAGE_API_VERSION=2
 
         for ((i=1; i<=MAX_RETRIES; i++)); do
             # 确保httpd服务已运行
@@ -729,7 +734,7 @@ EOF
                 fi
                 
                 echo "检查httpd配置:"
-                httpd -t 2>&1 || echo "httpd配置检查失败"
+                /usr/sbin/httpd -t 2>&1 || echo "httpd配置检查失败"
                 
                 if [ -f /etc/keystone/keystone.conf ]; then
                     echo "检查keystone配置文件关键内容:"
