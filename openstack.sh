@@ -39,34 +39,41 @@ export LC_ALL=zh_CN.UTF-8
 # 重定向所有命令的错误输出到中文提示
 exec 2> >(while read line; do echo -e "\033[33m警告: $line\033[0m"; done)
 
-# 自动获取本机IP地址
+# 获取本机IP地址（改进错误处理）
 get_host_ip() {
     # 获取所有非回环IPv4地址
-    local ips=($(ip -4 addr show | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' | grep -v '^127\\.0\\.0\\.1$'))
+    local ips=($(ip -4 addr show | grep -E 'inet\\s' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1))
+    
     local count=${#ips[@]}
-
+    
     if [ $count -eq 0 ]; then
-        handle_error "未检测到有效IPv4地址，请检查网络配置" "IP检测"
-    elif [ $count -eq 1 ]; then
-        # 使用printf确保无换行符
+        echo "未检测到有效IPv4地址，请检查网络配置" >&2
+        return 1
+    fi
+    
+    if [ $count -eq 1 ]; then
         printf '%s' "${ips[0]}"
     else
-        echo -e "\\n检测到多个网络接口，请选择要使用的IP地址："
+        echo -e "\\n检测到多个网络接口，请选择要使用的IP地址：" >&2
         for i in "${!ips[@]}"; do
-            echo "  [$i] ${ips[$i]}"
+            echo "  [$i] ${ips[$i]}" >&2
         done
         read -p "请输入序号: " index
         if [[ $index =~ ^[0-9]+$ ]] && [ $index -lt $count ]; then
-            # 使用printf确保无换行符
             printf '%s' "${ips[$index]}"
         else
-            handle_error "无效的序号选择" "IP选择"
+            echo "无效的序号选择" >&2
+            return 1
         fi
     fi
 }
 
-# 获取主机IP和网段
-HOST_IP=$(get_host_ip)
+# 使用改进的错误处理机制
+HOST_IP=$(get_host_ip 2>&1) || handle_error "IP检测失败: $HOST_IP" "IP检测"
+
+# 确保HOST_IP是纯净字符串
+HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
+
 NETWORK=$(echo $HOST_IP | awk -F. '{print $1"."$2"."$3".0/24"}')
 
 # 更新节点信息
@@ -153,8 +160,8 @@ done
 
 # 遍历节点信息并添加到 hosts 文件
 for node in "${NODES[@]}"; do
-  ip=$(echo "$node" | awk '{print $1}' | tr -d '\n\r')
-  hostname=$(echo "$node" | awk '{print $2}' | tr -d '\n\r')
+  ip=$(echo "$node" | awk '{print $1}' | tr -d '\\n\\r')
+  hostname=$(echo "$node" | awk '{print $2}' | tr -d '\\n\\r')
 
   # 检查 hosts 文件中是否已存在相应的解析
   if grep -Fq "$ip $hostname" /etc/hosts; then
