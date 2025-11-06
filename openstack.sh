@@ -473,8 +473,8 @@ key_repository = /etc/keystone/fernet-keys/
 key_repository = /etc/keystone/credential-keys/
 [auth]
 methods = password,token
-password = keystone.auth.plugins.password.Password
-token = keystone.auth.plugins.token.Token
+password = password
+token = token
 [endpoint_filter]
 driver = sql
 [identity]
