@@ -581,6 +581,17 @@ if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf ins
         ERROR_LOG+=("[包安装] keystone包安装不完整")
     fi
     
+    # 验证keystone认证插件是否可用
+    echo "验证Keystone认证插件..."
+    if ! python3 -c "import keystone.auth.plugins.password; import keystone.auth.plugins.token; import keystone.auth.plugins.external" 2>/dev/null; then
+        echo "警告: Keystone认证插件导入失败，尝试重新安装相关包..."
+        if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+            sudo dnf reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
+        else
+            sudo yum reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
+        fi
+    fi
+    
     # 生成keystone配置文件
     cat > /etc/keystone/keystone.conf << EOF
 [DEFAULT]
@@ -777,7 +788,7 @@ EOF
         ADMIN_PASS=$(echo "$ADMIN_PASS" | tr -d '\n\r' | tr -cd '[:print:]')
 
         # 在执行bootstrap之前，检查keystone相关包是否完整
-        if ! python3 -c "import keystone.auth.plugins.password; import keystone.auth.plugins.token; import keystone.auth.plugins.external" 2>/dev/null; then
+        if ! python3 -c "import keystone.auth.plugins.password; import keystone.auth.plugins.token; import keystone.auth.plugins.external; import keystone.auth.plugins.oauth1; import keystone.auth.plugins.application_credential" 2>/dev/null; then
             echo -e "\033[33m警告: keystone认证插件导入失败，尝试重新安装keystone包...\033[0m"
             if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
                 sudo dnf reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
@@ -998,9 +1009,9 @@ if ! openstack token issue &> /dev/null; then
     else
         echo "无法找到keystone日志文件"
     fi
-    handle_error "glance服务依赖的keystone服务未就绪" "服务依赖检查"
+    echo "警告: glance服务依赖的keystone服务未就绪，继续执行"
+    ERROR_LOG+=("[服务依赖检查] glance服务依赖的keystone服务未就绪")
 fi
-
 if command -v openstack &> /dev/null; then
     echo "创建glance用户..."
     if ! openstack user create --domain $DOMAIN_NAME --password $GLANCE_PASS glance; then
@@ -1162,30 +1173,36 @@ if command -v openstack &> /dev/null; then
     
     echo "添加placement角色..."
     if ! openstack role add --project service --user placement admin; then
-        handle_error "添加 placement 角色失败" "placement初始化"
+        echo "警告: 添加 placement 角色失败，继续执行"
+        ERROR_LOG+=("[placement初始化] 添加 placement 角色失败")
     fi
     
     echo "创建placement服务..."
     if ! openstack service create --name placement --description "Placement API" placement; then
-        handle_error "创建 placement 服务失败" "placement初始化"
+        echo "警告: 创建 placement 服务失败，继续执行"
+        ERROR_LOG+=("[placement初始化] 创建 placement 服务失败")
     fi
     
     echo "创建placement public端点..."
     if ! openstack endpoint create --region RegionOne placement public http://$HOST_NAME:8778; then
-        handle_error "创建 placement public 端点失败" "placement初始化"
+        echo "警告: 创建 placement public 端点失败，继续执行"
+        ERROR_LOG+=("[placement初始化] 创建 placement public 端点失败")
     fi
     
     echo "创建placement internal端点..."
     if ! openstack endpoint create --region RegionOne placement internal http://$HOST_NAME:8778; then
-        handle_error "创建 placement internal 端点失败" "placement初始化"
+        echo "警告: 创建 placement internal 端点失败，继续执行"
+        ERROR_LOG+=("[placement初始化] 创建 placement internal 端点失败")
     fi
     
     echo "创建placement admin端点..."
     if ! openstack endpoint create --region RegionOne placement admin http://$HOST_NAME:8778; then
-        handle_error "创建 placement admin 端点失败" "placement初始化"
+        echo "警告: 创建 placement admin 端点失败，继续执行"
+        ERROR_LOG+=("[placement初始化] 创建 placement admin 端点失败")
     fi
 else
-    handle_error "openstack 命令未找到，无法配置placement服务" "placement安装"
+    echo "警告: openstack 命令未找到，无法配置placement服务，继续执行"
+    ERROR_LOG+=("[placement安装] openstack 命令未找到")
 fi
 
 if yum install -y openstack-placement-api; then
@@ -1208,7 +1225,7 @@ project_name = service
 username = placement
 password = $PLACEMENT_PASS
 [placement_database]
-connection = mysql+pymysql://placement:$PLACEMENT_DBPASS@$HOST_IP/placement
+connection = mysql+pymysql://placement:$PLACEMENT_DBPASS@$HOST_IP:3306/placement
 eof
 
     if command -v placement-manage &> /dev/null; then
