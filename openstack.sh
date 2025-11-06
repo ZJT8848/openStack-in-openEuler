@@ -634,11 +634,11 @@ if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf ins
     
     # 重新安装keystone包
     if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
-        sudo dnf reinstall -y openstack-keystone python3-keystone
+        sudo dnf reinstall -y openstack-keystone python3-keystone python3-stevedore
         # 安装额外的keystone依赖包
         sudo dnf install -y python3-oauthlib python3-requests-oauthlib
     else
-        sudo yum reinstall -y openstack-keystone python3-keystone
+        sudo yum reinstall -y openstack-keystone python3-keystone python3-stevedore
         # 安装额外的keystone依赖包
         sudo yum install -y python3-oauthlib python3-requests-oauthlib
     fi
@@ -685,9 +685,9 @@ if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf ins
     if ! python3 -c "import keystone.auth.plugins.password; import keystone.auth.plugins.token; import keystone.auth.plugins.external" 2>/dev/null; then
         echo "警告: Keystone认证插件导入失败，尝试重新安装相关包..."
         if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
-            sudo dnf reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
+            sudo dnf reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib python3-stevedore
         else
-            sudo yum reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
+            sudo yum reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib python3-stevedore
         fi
     fi
     
@@ -708,6 +708,32 @@ if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf ins
             echo "警告: 未找到pip命令，跳过依赖库修复"
             ERROR_LOG+=("[依赖修复] 未找到pip命令")
         fi
+    fi
+    
+    # 额外检查keystone认证插件
+    echo "额外检查Keystone认证插件..."
+    AUTH_PLUGINS=("password" "token" "external" "oauth1" "application_credential")
+    for plugin in "${AUTH_PLUGINS[@]}"; do
+        if ! python3 -c "import keystone.auth.plugins.$plugin" 2>/dev/null; then
+            echo "警告: Keystone $plugin 认证插件导入失败"
+            ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件导入失败")
+        fi
+    done
+    
+    # 验证keystone配置文件中的所有认证方法是否正确配置
+    echo "验证Keystone配置文件认证方法..."
+    if [ -f /etc/keystone/keystone.conf ]; then
+        # 检查每个认证方法是否都已正确配置
+        AUTH_METHODS=("password" "token" "external" "oauth1" "application_credential")
+        for method in "${AUTH_METHODS[@]}"; do
+            if ! grep -q "^$method = keystone.auth.plugins.$method" /etc/keystone/keystone.conf; then
+                echo "警告: Keystone配置文件中缺少 $method 认证方法配置"
+                ERROR_LOG+=("[配置验证] Keystone配置文件中缺少 $method 认证方法配置")
+            fi
+        done
+    else
+        echo "警告: Keystone配置文件不存在"
+        ERROR_LOG+=("[配置验证] Keystone配置文件不存在")
     fi
     
     # 生成keystone配置文件
@@ -746,6 +772,38 @@ driver = sql
 driver = sql
 [application_credential]
 driver = sql
+[oauth1]
+driver = sql
+[ec2]
+driver = sql
+[trust]
+driver = sql
+[federation]
+driver = sql
+[resource_cache]
+driver = sql
+[domain_config]
+driver = sql
+[catalog]
+driver = sql
+[credential_provider]
+driver = sql
+[identity_mapping]
+driver = sql
+[role_assignment]
+driver = sql
+[user]
+driver = sql
+[group]
+driver = sql
+[project]
+driver = sql
+[region]
+driver = sql
+[service]
+driver = sql
+[endpoint]
+driver = sql
 [wsgi]
 application = keystone.server.wsgi_app:init_application
 # 显式禁用LDAP配置以防止驱动加载错误
@@ -767,7 +825,7 @@ EOF
     fi
 
     # 验证配置文件格式完整性
-    if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@${HOST_IP}/keystone" /etc/keystone/keystone.conf; then
+    if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@${HOST_IP}:3306/keystone" /etc/keystone/keystone.conf; then
         echo -e "\\033[31m错误: keystone.conf配置文件生成失败，数据库连接字符串不完整\\033[0m"
         echo "生成的配置文件内容："
         cat /etc/keystone/keystone.conf
@@ -775,6 +833,15 @@ EOF
         ERROR_LOG+=("[配置生成] keystone.conf配置文件生成失败")
     fi
 
+    # 验证所有认证方法是否正确配置
+    AUTH_METHODS_CHECK=("password" "token" "external" "oauth1" "application_credential")
+    for method in "${AUTH_METHODS_CHECK[@]}"; do
+        if ! grep -q "^$method = keystone.auth.plugins.$method" /etc/keystone/keystone.conf; then
+            echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+            ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+        fi
+    done
+    
     if command -v keystone-manage &> /dev/null; then
         # 确保数据库服务已启动
         if ! systemctl is-active --quiet mariadb; then
@@ -927,6 +994,100 @@ EOF
             fi
         fi
 
+        # 特别检查application_credential插件是否存在
+        if ! python3 -c "import keystone.auth.plugins.application_credential" 2>/dev/null; then
+            echo -e "\033[33m警告: keystone application_credential插件缺失，尝试安装相关包...\033[0m"
+            if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+                sudo dnf install -y python3-keystone python3-oauthlib python3-requests-oauthlib
+            else
+                sudo yum install -y python3-keystone python3-oauthlib python3-requests-oauthlib
+            fi
+        fi
+
+        # 额外检查keystone认证插件
+        echo "额外检查Keystone认证插件..."
+        AUTH_PLUGINS=("password" "token" "external" "oauth1" "application_credential")
+        for plugin in "${AUTH_PLUGINS[@]}"; do
+            if ! python3 -c "import keystone.auth.plugins.$plugin" 2>/dev/null; then
+                echo "警告: Keystone $plugin 认证插件导入失败"
+                ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件导入失败")
+            fi
+        done
+        
+        # 验证stevedore库是否可用
+        echo "验证stevedore库..."
+        if ! python3 -c "import stevedore" 2>/dev/null; then
+            echo "警告: stevedore库导入失败，尝试安装..."
+            if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+                sudo dnf install -y python3-stevedore
+            else
+                sudo yum install -y python3-stevedore
+            fi
+        fi
+
+        # 特别检查application_credential插件是否存在
+        if ! python3 -c "import keystone.auth.plugins.application_credential" 2>/dev/null; then
+            echo -e "\033[33m警告: keystone application_credential插件缺失，尝试安装相关包...\033[0m"
+            if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+                sudo dnf install -y python3-keystone python3-oauthlib python3-requests-oauthlib python3-stevedore
+            else
+                sudo yum install -y python3-keystone python3-oauthlib python3-requests-oauthlib python3-stevedore
+            fi
+        fi
+
+            
+            # 再次检查插件
+            echo "重新检查认证插件..."
+            for plugin in "${AUTH_PLUGINS[@]}"; do
+                if ! python3 -c "import keystone.auth.plugins.$plugin" 2>/dev/null; then
+                    echo -e "\033[31m严重错误: Keystone $plugin 认证插件仍然无法导入\033[0m"
+                fi
+            done
+        fi
+
+                    ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件仍然无法导入")
+                fi
+            done
+        fi
+
+        # 特别验证application_credential插件
+        echo "特别验证application_credential插件..."
+        if python3 -c "import keystone.auth.plugins.application_credential" 2>/dev/null; then
+            echo "✓ application_credential插件可以正常导入"
+            # 验证插件类是否存在
+            if python3 -c "from keystone.auth.plugins.application_credential import ApplicationCredential" 2>/dev/null; then
+                echo "✓ ApplicationCredential类可以正常导入"
+            else
+                echo -e "\033[31m错误: ApplicationCredential类无法导入\033[0m"
+                ERROR_LOG+=("[认证插件] ApplicationCredential类无法导入")
+            fi
+        else
+            echo -e "\033[31m错误: application_credential插件无法导入\033[0m"
+            ERROR_LOG+=("[认证插件] application_credential插件无法导入")
+        fi
+
+        # 额外检查keystone配置文件中的驱动配置
+        echo "检查Keystone配置文件中的驱动配置..."
+        if [ -f /etc/keystone/keystone.conf ]; then
+            # 检查关键驱动配置是否存在
+            REQUIRED_DRIVERS=("endpoint_filter" "identity" "resource" "assignment" "role" "policy" "application_credential" "oauth1" "ec2" "trust" "federation" "wsgi")
+            for driver in "${REQUIRED_DRIVERS[@]}"; do
+                if ! grep -q "^\[$driver\]" /etc/keystone/keystone.conf; then
+                    echo -e "\033[33m警告: Keystone配置文件中缺少 [$driver] 配置段\033[0m"
+                    ERROR_LOG+=("[配置验证] Keystone配置文件中缺少 [$driver] 配置段")
+                fi
+            done
+            
+            # 特别检查application_credential配置段的内容
+            if grep -q "^\[application_credential\]" /etc/keystone/keystone.conf; then
+                # 检查driver是否设置为sql
+                if ! grep -q "^driver = sql" /etc/keystone/keystone.conf | grep -A 5 "\[application_credential\]"; then
+                    echo -e "\033[33m警告: [application_credential]段中driver未设置为sql\033[0m"
+                    ERROR_LOG+=("[配置验证] [application_credential]段中driver未设置为sql")
+                fi
+            fi
+        fi
+
         # 再次检查Python依赖库兼容性
         if ! python3 -c "import requests; import urllib3" 2>/dev/null; then
             echo "警告: Python依赖库可能存在版本冲突，尝试修复..."
@@ -1044,7 +1205,8 @@ for ((i=1; i<=MAX_RETRIES; i++)); do
         # 显示占用5000端口的进程信息
         if ss -tuln | grep ':5000' > /dev/null; then
             echo "当前占用5000端口的进程:"
-            lsof -i :5000 2>/dev/null || netstat -tlnp | grep :5000
+            # 使用多种方法尝试显示进程信息
+            lsof -i :5000 2>/dev/null || (ss -tlnp | grep :5000 2>/dev/null || echo "无法确定占用5000端口的进程")
         fi
         
         echo "检查httpd配置:"
@@ -1543,7 +1705,7 @@ log_dir = /var/log/nova
 [api]
 auth_strategy = keystone
 [api_database]
-connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_IP/nova_api
+mysql+pymysql://keystone:${KEYSTONE_DBPASS}@${HOST_IP}:3306/keystone
 [barbican]
 [cache]
 [cinder]
@@ -1553,7 +1715,7 @@ connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_IP/nova_api
 [consoleauth]
 [cors]
 [database]
-connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_IP/nova
+mysql+pymysql://keystone:${KEYSTONE_DBPASS}@${HOST_IP}:3306/keystone
 [devices]
 [ephemeral_storage_encryption]
 [filter_scheduler]
