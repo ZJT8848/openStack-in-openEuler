@@ -2,13 +2,10 @@
 
 # OpenStack环境初始化和安装脚本（单机版）
 # 专为单机部署设计，移除了多机部署相关功能
-
 # 定义是否为单机部署模式
 SINGLE_NODE_DEPLOYMENT=true
-
 # 定义当前节点的密码（默认密码）
 HOST_PASS="000000"
-
 # 定义中文错误处理函数
 handle_error() {
     local error_msg="$1"
@@ -18,21 +15,17 @@ handle_error() {
     echo "脚本执行已中止，请检查上述错误"
     exit 1
 }
-
 # 检查命令执行结果
 check_result() {
     if [ $? -ne 0 ]; then
         handle_error "$1" "$2"
     fi
 }
-
 # 设置中文环境变量
 export LANG=zh_CN.UTF-8
 export LC_ALL=zh_CN.UTF-8
-
 # 重定向所有命令的错误输出到中文提示
 exec 2> >(while read line; do echo -e "\033[33m警告: $line\033[0m"; done)
-
 # 获取本机IP地址（严格遵循Shell函数设计安全规范）
 get_host_ip() {
     # 检查是否为交互式终端
@@ -47,17 +40,13 @@ get_host_ip() {
         echo "ip命令未找到，请安装iproute2工具包" >&2
         return 1
     fi
-
     # 获取所有非回环IPv4地址（精确过滤回环地址）
     local ips=($($IP_CMD -4 addr show 2>/dev/null | grep -E 'inet\s' | grep -v "127\\.0\\.0\\.1" | awk '{print $2}' | cut -d/ -f1))
-    
     local count=${#ips[@]}
-    
     if [ $count -eq 0 ]; then
         echo "未检测到有效IPv4地址" >&2
         return 1
     fi
-    
     if [ $count -eq 1 ]; then
         printf '%s' "${ips[0]}"
         return 0
@@ -83,17 +72,14 @@ get_host_ip() {
         fi
     fi
 }
-
 # 安全调用IP检测函数（限制错误消息长度）
 if ! HOST_IP=$(get_host_ip 2>&1); then
     # 限制错误消息长度为100字符，避免'文件过长'问题
     error_msg=$(echo "$HOST_IP" | tr -d '\n\r' | tr -cd '[:print:]' | cut -c1-100)
     handle_error "IP检测失败: $error_msg" "IP检测"
 fi
-
 # 双重清理确保HOST_IP纯净（仅清理换行符和回车符）
 HOST_IP=$(echo "$HOST_IP" | tr -d '\n\r')
-
 # 验证HOST_IP是否为有效IP格式
 if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     # 添加十六进制转储诊断（帮助识别隐藏字符）
@@ -102,16 +88,13 @@ if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo -e "\033[33m当前检测到的IP原始内容：'$HOST_IP'\033[0m" >&2
     handle_error "检测到的IP格式无效: $HOST_IP" "IP验证"
 fi
-
 # 附加验证：确保IP不是全0或回环地址
 if [[ "$HOST_IP" =~ ^127\.0\.0\.1$ || "$HOST_IP" =~ ^0\.0\.0\.0$ ]]; then
     echo -e "\033[31m错误：检测到回环地址或无效地址: $HOST_IP\033[0m" >&2
     handle_error "IP地址无效（回环或全0）: $HOST_IP" "IP验证"
 fi
-
 # 根据主机IP自动推导网络段
 NETWORK=$(echo $HOST_IP | awk -F. '{print $1"."$2"."$3".0/24"}')
-
 # 创建中文欢迎界面
 cat > /etc/motd <<EOF 
  ################################
@@ -128,50 +111,39 @@ if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     ip -4 addr show
     handle_error "IP格式验证失败" "IP验证"
 fi
-
 NETWORK=$(echo $HOST_IP | awk -F. '{print $1"."$2"."$3".0/24"}')
-
 # 更新节点信息
 NODES=("$HOST_IP controller")
 TIME_SERVER_IP=$NETWORK
-
 # 欢迎界面改为中文
 cat > /etc/motd <<EOF 
  ################################
  #     欢迎使用 OpenStack      #
  ################################
 EOF
-
 # 设置中文环境变量
 export LANG=zh_CN.UTF-8
 export LC_ALL=zh_CN.UTF-8
-
 # 重定向所有命令的错误输出到中文提示
 exec 2> >(while read line; do echo -e "\033[33m警告: $line\033[0m"; done)
-
 # 欢迎界面
 echo "开始执行OpenStack环境初始化..."
-
 # 检查操作系统版本
 if ! grep -q "openEuler" /etc/os-release; then
     echo -e "\033[33m警告: 此脚本专为openEuler设计，当前系统可能不兼容\033[0m"
 fi
-
 # 欢迎界面
 cat > /etc/motd <<EOF 
  ################################
  #    Welcome  to  openstack    #
  ################################
 EOF
-
 # 禁用selinux
 sed -i 's/SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
 setenforce 0
-
 # firewalld
 systemctl stop firewalld
 systemctl disable firewalld >> /dev/null 2>&1
-
 # 关闭IPtables，清空规则
 if ! yum install iptables-services -y; then
     echo -e "\033[31m警告: iptables-services 安装失败\033[0m"
@@ -184,35 +156,28 @@ else
     systemctl stop iptables
     systemctl disable iptables
 fi
-
 # 优化ssh连接
 sed -i -e 's/#UseDNS yes/UseDNS no/g' -e 's/GSSAPIAuthentication yes/GSSAPIAuthentication no/g' /etc/ssh/sshd_config
 systemctl reload sshd
-
 # 修改主机名
 for node in "${NODES[@]}"; do
   ip=$(echo "$node" | awk '{print $1}')
   hostname=$(echo "$node" | awk '{print $2}')
-
   # 获取当前节点的主机名和 IP
   current_ip=$(hostname -I | awk '{print $1}')
   current_hostname=$(hostname)
-
   # 检查当前节点与要修改的节点信息是否匹配
   if [[ "$current_ip" == "$ip" && "$current_hostname" != "$hostname" ]]; then
     echo "Updating hostname to $hostname on $current_ip..."
     hostnamectl set-hostname "$hostname"
-
     if [ $? -eq 0 ]; then
       echo "Hostname updated successfully."
     else
       echo "Failed to update hostname."
     fi
-
     break
   fi
 done
-
 # 遍历节点信息并添加到 hosts 文件
 for node in "${NODES[@]}"; do
   ip=$(echo "$node" | awk '{print $1}' | tr -d '\\n\\r')
@@ -227,10 +192,8 @@ for node in "${NODES[@]}"; do
     echo "Added host entry for $hostname in /etc/hosts."
   fi
 done
-
 # 日志文件
 LOG_FILE="init.log"
-
 # 检查是否已生成SSH密钥
 if [[ ! -s ~/.ssh/id_rsa.pub ]]; then
     ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa -q -b 2048
@@ -238,7 +201,6 @@ if [[ ! -s ~/.ssh/id_rsa.pub ]]; then
 else
     echo "$(date '+%Y-%m-%d %H:%M:%S') - SSH密钥已存在" >> "$LOG_FILE"
 fi
-
 # 检查是否为单机部署模式
 if [[ "$SINGLE_NODE_DEPLOYMENT" == true ]]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - 检测到单机部署模式，跳过SSH密钥分发流程" >> "$LOG_FILE"
@@ -246,7 +208,6 @@ if [[ "$SINGLE_NODE_DEPLOYMENT" == true ]]; then
 else
     # 在多机部署环境中，不需要分发SSH密钥到其他节点
     echo "$(date '+%Y-%m-%d %H:%M:%S') - 非单机部署模式：开始SSH密钥分发流程" >> "$LOG_FILE"
-    
     # 检查并安装 sshpass 工具
     if ! which sshpass &> /dev/null; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 工具未安装，正在安装 sshpass..." >> "$LOG_FILE"
@@ -260,7 +221,6 @@ else
     else
         echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 工具已安装" >> "$LOG_FILE"
     fi
-
     # 遍历所有节点（如果有sshpass）
     if which sshpass &> /dev/null; then
         for node in "${NODES[@]}"; do
@@ -273,9 +233,7 @@ else
                 echo -e "\033[31m错误详情：无效的IP地址格式 '$ip'\\033[0m"
                 handle_error "无效的IP地址格式: $ip" "SSH密钥分发"
             fi
-
             echo "$(date '+%Y-%m-%d %H:%M:%S') - 复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
-
             # 主机名格式验证
             if [[ ! "$hostname" =~ ^[a-zA-Z0-9.-]+$ ]]; then
                 echo -e "\\033[31m错误详情：无效的主机名格式 '$hostname'，应为字母数字和点连字符组合\\033[0m"
@@ -283,21 +241,19 @@ else
                 echo -e "\\033[33m当前节点信息: '$node'\\033[0m"
                 handle_error "无效的主机名格式: $hostname" "SSH密钥分发"
             fi
-
             # 在尝试SSH连接前先测试网络连通性
             if ! ping -c 3 "$ip" >/dev/null 2>&1; then
                 echo -e "\\033[31m错误详情：无法ping通目标主机 $hostname ($ip)，请检查网络连接\\033[0m"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') - 无法ping通节点 $hostname ($ip)" >> "$LOG_FILE"
                 continue
             fi
-            
+        
             # 测试SSH端口连通性
             if ! timeout 10 bash -c "echo >/dev/tcp/$ip/22" 2>/dev/null; then
                 echo -e "\\033[31m错误详情：无法连接到 $hostname ($ip) 的SSH端口，请检查防火墙和服务状态\\033[0m"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') - 无法连接到节点 $hostname ($ip) 的SSH端口" >> "$LOG_FILE"
                 continue
             fi
-
             # 使用IP地址作为主机标识进行SSH密钥分发
             if sshpass -p "$HOST_PASS" ssh-copy-id -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /root/.ssh/id_rsa.pub "root@$ip" 2>/dev/null; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') - 成功复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
@@ -309,36 +265,27 @@ else
         done
     fi
 fi
-
 # 时间同步（单机部署模式）
 echo "$(date '+%Y-%m-%d %H:%M:%S') - 配置单机时间同步" >> "$LOG_FILE"
 name=$(hostname)
-
 # 在单机部署模式下，将当前节点配置为时间同步源
 sed -i '3,4s/^/#/g' /etc/chrony.conf
 sed -i "7s/^/server $HOST_IP iburst/g" /etc/chrony.conf
 echo "allow $NETWORK" >> /etc/chrony.conf
 echo "local stratum 10" >> /etc/chrony.conf
-
 # 重启并启用 chrony 服务
 systemctl restart chronyd 2>/dev/null || echo "警告: chronyd 服务重启失败"
 systemctl enable chronyd >> /dev/null 2>&1
-
 echo -e "\033[32m✓ 配置单机时间同步完成\033[0m"
-
 # 重启并启用 chrony 服务
 systemctl restart chronyd 2>/dev/null || echo "警告: chronyd 服务重启失败"
-
 echo "###############################################################"
 echo "#################      集群初始化成功     #####################"
 echo "###############################################################"
-
 # 下载OpenStack Train Yum 源
 echo "配置OpenStack Train Yum源..."
-
 # 1. 卸载 wallaby 包（如果存在）
 #sudo dnf remove -y openstack-release-wallaby 2>/dev/null
-
 # 2. 安装 train 包
 if sudo dnf install -y openstack-release-train; then
     echo "OpenStack Train 源安装成功"
@@ -364,14 +311,11 @@ gpgkey=https://repo.openeuler.org/openEuler-22.03-LTS-SP4/OS/\$basearch/RPM-GPG-
 priority=1
 eof
 fi
-
 # 3. 清理缓存
 sudo dnf clean all
 sudo dnf makecache
-
 # 配置环境变量
 echo "配置环境变量..."
-
 cat > /root/openrc.sh << eof
 HOST_IP=$HOST_IP
 HOST_PASS=000000
@@ -402,42 +346,34 @@ maxvlan=1000
 eof
 
 source /root/openrc.sh
-
 # 安装基础服务：数据库、消息队列、缓存
 echo "安装基础服务..."
-
 # 安装数据库服务
 if yum install -y mariadb mariadb-server python3-PyMySQL; then
     echo "数据库服务安装成功"
 else
     handle_error "数据库相关软件包安装失败" "基础服务安装"
 fi
-
 # 安装消息队列服务
 if yum install -y rabbitmq-server; then
     echo "消息队列服务安装成功"
 else
     handle_error "rabbitmq-server 安装失败" "基础服务安装"
 fi
-
 # 安装缓存服务
 if yum install -y memcached python3-memcached; then
     echo "缓存服务安装成功"
 else
     handle_error "memcached 相关软件包安装失败" "基础服务安装"
 fi
-
 # 安装keystone服务
 echo "安装keystone服务..."
-
 # 修复数据库初始化函数
 setup_database() {
     local db_name=$1
     local db_user=$2
     local db_pass=$3
-
     echo "配置数据库: $db_name"
-
     # 检查MariaDB服务状态
     if ! systemctl is-active --quiet mariadb; then
         echo -e "\033[33m警告: MariaDB服务未运行，正在启动...\033[0m"
@@ -456,7 +392,6 @@ setup_database() {
             handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
         fi
     fi
-
     # 检查是否已存在数据库
     if mysql -u root --skip-password -e "SHOW DATABASES LIKE '$db_name';" 2>/dev/null | grep -q "$db_name"; then
         echo "数据库 $db_name 已存在，跳过创建"
@@ -467,7 +402,6 @@ setup_database() {
             handle_error "创建 $db_name 数据库失败，请检查MariaDB服务状态" "数据库创建"
         fi
     fi
-
     # 检查用户是否存在
     if mysql -u root --skip-password -e "SELECT User FROM mysql.user WHERE User='$db_user';" 2>/dev/null | grep -q "$db_user"; then
         echo "数据库用户 $db_user 已存在，更新密码..."
@@ -484,43 +418,34 @@ setup_database() {
             handle_error "远程用户创建失败" "数据库授权"
         fi
     fi
-
     echo "✓ 数据库 $db_name 配置成功"
 }
-
 # 使用增强版函数
 setup_database keystone keystone $KEYSTONE_DBPASS
-
 if yum install -y openstack-keystone httpd mod_wsgi; then
     if [ -f /etc/keystone/keystone.conf ]; then
         cp /etc/keystone/keystone.conf{,.bak}
     fi
-
     # 确保keystone日志目录存在且权限正确
     mkdir -p /var/log/keystone
     chown -R keystone:keystone /var/log/keystone
     chmod 750 /var/log/keystone
-    
     # 确保keystone配置目录权限正确
     mkdir -p /etc/keystone/fernet-keys /etc/keystone/credential-keys
     chown -R keystone:keystone /etc/keystone/fernet-keys /etc/keystone/credential-keys
     chmod 700 /etc/keystone/fernet-keys /etc/keystone/credential-keys
-
     # 创建httpd日志目录（如果不存在）
     mkdir -p /var/log/httpd
     touch /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
     chown keystone:keystone /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
     chmod 644 /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
-
     # 强化变量清理 - 严格过滤非可打印字符，特别是IP地址
     HOST_IP=$(echo "$HOST_IP" | tr -d '\n\r' | tr -cd '0-9.')
     KEYSTONE_DBPASS=$(echo "$KEYSTONE_DBPASS" | tr -d '\n\r' | tr -cd '[:print:]')
-    
     # 验证IP地址格式
     if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         handle_error "无效的HOST_IP地址格式: $HOST_IP" "配置生成"
     fi
-
     # 修复keystone配置文件生成问题
     # 使用正确的heredoc语法，确保变量能够正确替换
     cat > /etc/keystone/keystone.conf << EOF
@@ -539,7 +464,9 @@ key_repository = /etc/keystone/fernet-keys/
 key_repository = /etc/keystone/credential-keys/
 [auth]
 methods = external,password,token
-password = ldap
+password = keystone.auth.plugins.password.Password
+external = keystone.auth.plugins.external.DefaultDomain
+token = keystone.auth.plugins.token.Token
 [endpoint_filter]
 driver = sql
 [identity]
@@ -556,6 +483,9 @@ driver = sql
 driver = sql
 [wsgi]
 application = keystone.server.wsgi_app:init_application
+# 显式禁用LDAP配置以防止驱动加载错误
+[ldap]
+[identity_mapping]
 EOF
 
     # 验证配置文件格式完整性
@@ -697,15 +627,21 @@ EOF
             else
                 echo -e "\\033[33m警告: keystone bootstrap 尝试 $i 失败，3秒后重试...\\033[0m"
                 sleep 3
+                
                 # 检查5000端口占用情况
                 if ss -tuln | grep ':5000' > /dev/null; then
                     echo -e "\\033[31m错误: 端口5000已被占用，请检查冲突服务\\033[0m"
+                    # 杀死占用端口的进程
+                    fuser -k 5000/tcp 2>/dev/null
+                    sleep 2
                 fi
+                
                 # 检查keystone日志
                 if [ -f /var/log/keystone/keystone.log ]; then
                     echo -e "\\033[31m最近5行错误日志：\\033[0m"
                     grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 5
                 fi
+                
                 # 检查httpd错误日志
                 if [ -f /var/log/httpd/error_log ]; then
                     echo -e "\\033[31mhttpd错误日志：\\033[0m"
