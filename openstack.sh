@@ -393,29 +393,38 @@ setup_database() {
         fi
     fi
     # 检查是否已存在数据库
-    if mysql -u root --skip-password -e "SHOW DATABASES LIKE '$db_name';" 2>/dev/null | grep -q "$db_name"; then
+    if mysql -u root -e "SHOW DATABASES LIKE '$db_name';" 2>/dev/null | grep -q "$db_name"; then
         echo "数据库 $db_name 已存在，跳过创建"
     else
-        # 使用--skip-password确保openEuler兼容性
-        if ! mysql -u root --skip-password -e "CREATE DATABASE $db_name;"; then
+        # 创建数据库
+        if ! mysql -u root -e "CREATE DATABASE $db_name CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
             echo -e "\033[31m错误详情：MariaDB创建数据库失败，请检查权限\033[0m"
             handle_error "创建 $db_name 数据库失败，请检查MariaDB服务状态" "数据库创建"
         fi
     fi
     # 检查用户是否存在
-    if mysql -u root --skip-password -e "SELECT User FROM mysql.user WHERE User='$db_user';" 2>/dev/null | grep -q "$db_user"; then
+    if mysql -u root -e "SELECT User FROM mysql.user WHERE User='$db_user';" 2>/dev/null | grep -q "$db_user"; then
         echo "数据库用户 $db_user 已存在，更新密码..."
-        mysql -u root --skip-password -e "ALTER USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"
-        mysql -u root --skip-password -e "ALTER USER '$db_user'@'%' IDENTIFIED BY '$db_pass';"
+        mysql -u root -e "ALTER USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"
+        mysql -u root -e "ALTER USER '$db_user'@'%' IDENTIFIED BY '$db_pass';"
     else
         # 创建用户并授权
-        if ! mysql -u root --skip-password -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"; then
+        if ! mysql -u root -e "CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"; then
             echo -e "\033[31m错误详情：本地用户创建失败，请检查数据库权限\033[0m"
             handle_error "本地用户创建失败" "数据库授权"
         fi
-        if ! mysql -u root --skip-password -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'%' IDENTIFIED BY '$db_pass';"; then
+        if ! mysql -u root -e "CREATE USER '$db_user'@'%' IDENTIFIED BY '$db_pass';"; then
             echo -e "\033[31m错误详情：远程用户创建失败，请检查数据库权限\033[0m"
             handle_error "远程用户创建失败" "数据库授权"
+        fi
+        # 授权
+        if ! mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'localhost';"; then
+            echo -e "\033[31m错误详情：本地用户授权失败，请检查数据库权限\033[0m"
+            handle_error "本地用户授权失败" "数据库授权"
+        fi
+        if ! mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'%';"; then
+            echo -e "\033[31m错误详情：远程用户授权失败，请检查数据库权限\033[0m"
+            handle_error "远程用户授权失败" "数据库授权"
         fi
     fi
     echo "✓ 数据库 $db_name 配置成功"
@@ -454,7 +463,6 @@ log_dir = /var/log/keystone
 log_file = keystone.log
 debug = True
 verbose = True
-log_config_append = /etc/keystone/logging.conf
 [database]
 connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_IP/keystone
 [token]
