@@ -3,6 +3,9 @@
 # OpenStack环境初始化和安装脚本（单机版）
 # 专为单机部署设计，移除了多机部署相关功能
 
+# 定义是否为单机部署模式
+SINGLE_NODE_DEPLOYMENT=true
+
 # 定义当前节点的密码（默认密码）
 HOST_PASS="000000"
 
@@ -236,29 +239,28 @@ else
     echo "$(date '+%Y-%m-%d %H:%M:%S') - SSH密钥已存在" >> "$LOG_FILE"
 fi
 
-# 在单机部署环境中，不需要分发SSH密钥到其他节点
-echo "$(date '+%Y-%m-%d %H:%M:%S') - 单机部署模式：跳过SSH密钥分发流程" >> "$LOG_FILE"
-echo -e "\033[32m✓ 单机部署模式：跳过SSH密钥分发流程\033[0m"
-
-# 检查并安装 sshpass 工具
-if ! which sshpass &> /dev/null; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 工具未安装，正在安装 sshpass..." >> "$LOG_FILE"
-    sudo yum install -y sshpass >> "$LOG_FILE" 2>&1
-    if [[ $? -ne 0 ]]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 安装失败" >> "$LOG_FILE"
-        echo "警告: sshpass 安装失败，跳过SSH密钥分发"
-    else
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 安装完成" >> "$LOG_FILE"
-    fi
-else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 工具已安装" >> "$LOG_FILE"
-fi
-
 # 检查是否为单机部署模式
 if [[ "$SINGLE_NODE_DEPLOYMENT" == true ]]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - 检测到单机部署模式，跳过SSH密钥分发流程" >> "$LOG_FILE"
     echo -e "\033[32m✓ 单机部署模式：跳过SSH密钥分发流程\033[0m"
 else
+    # 在多机部署环境中，不需要分发SSH密钥到其他节点
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - 非单机部署模式：开始SSH密钥分发流程" >> "$LOG_FILE"
+    
+    # 检查并安装 sshpass 工具
+    if ! which sshpass &> /dev/null; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 工具未安装，正在安装 sshpass..." >> "$LOG_FILE"
+        sudo yum install -y sshpass >> "$LOG_FILE" 2>&1
+        if [[ $? -ne 0 ]]; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 安装失败" >> "$LOG_FILE"
+            echo "警告: sshpass 安装失败，跳过SSH密钥分发"
+        else
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 安装完成" >> "$LOG_FILE"
+        fi
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 工具已安装" >> "$LOG_FILE"
+    fi
+
     # 遍历所有节点（如果有sshpass）
     if which sshpass &> /dev/null; then
         for node in "${NODES[@]}"; do
@@ -494,60 +496,66 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
         cp /etc/keystone/keystone.conf{,.bak}
     fi
 
-    # 强化变量清理 - 严格过滤非可打印字符
-    HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
-    KEYSTONE_DBPASS=$(echo "$KEYSTONE_DBPASS" | tr -d '\\n\\r' | tr -cd '[:print:]')
+    # 确保keystone日志目录存在且权限正确
+    mkdir -p /var/log/keystone
+    chown -R keystone:keystone /var/log/keystone
+    chmod 750 /var/log/keystone
+    
+    # 确保keystone配置目录权限正确
+    mkdir -p /etc/keystone/fernet-keys /etc/keystone/credential-keys
+    chown -R keystone:keystone /etc/keystone/fernet-keys /etc/keystone/credential-keys
+    chmod 700 /etc/keystone/fernet-keys /etc/keystone/credential-keys
+
+    # 创建httpd日志目录（如果不存在）
+    mkdir -p /var/log/httpd
+    touch /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
+    chown keystone:keystone /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
+    chmod 644 /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
+
+    # 强化变量清理 - 严格过滤非可打印字符，特别是IP地址
+    HOST_IP=$(echo "$HOST_IP" | tr -d '\n\r' | tr -cd '0-9.')
+    KEYSTONE_DBPASS=$(echo "$KEYSTONE_DBPASS" | tr -d '\n\r' | tr -cd '[:print:]')
+    
+    # 验证IP地址格式
+    if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        handle_error "无效的HOST_IP地址格式: $HOST_IP" "配置生成"
+    fi
 
     # 修复keystone配置文件生成问题
     # 使用正确的heredoc语法，确保变量能够正确替换
     cat > /etc/keystone/keystone.conf << EOF
 [DEFAULT]
 log_dir = /var/log/keystone
-[application_credential]
-[assignment]
-[auth]
-[cache]
-[catalog]
-[cors]
-[credential]
+log_file = keystone.log
+debug = True
+verbose = True
 [database]
 connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_IP/keystone
-[domain_config]
-[endpoint_filter]
-[endpoint_policy]
-[eventlet_server]
-[federation]
-[fernet_receipts]
-[fernet_tokens]
-[healthcheck]
-[identity]
-[identity_mapping]
-[jwt_tokens]
-[ldap]
-[memcache]
-[oauth1]
-[oslo_messaging_amqp]
-[oslo_messaging_kafka]
-[oslo_messaging_notifications]
-[oslo_messaging_rabbit]
-[oslo_middleware]
-[oslo_policy]
-[policy]
-[profiler]
-[receipt]
-[resource]
-[revoke]
-[role]
-[saml]
-[security_compliance]
-[shadow_users]
 [token]
 provider = fernet
-[tokenless_auth]
-[totp]
-[trust]
-[unified_limit]
+[fernet_tokens]
+key_repository = /etc/keystone/fernet-keys/
+[credential]
+key_repository = /etc/keystone/credential-keys/
+[auth]
+methods = external,password,token
+password = ldap
+[endpoint_filter]
+driver = sql
+[identity]
+driver = sql
+[resource]
+driver = sql
+[assignment]
+driver = sql
+[role]
+driver = sql
+[policy]
+driver = sql
+[application_credential]
+driver = sql
 [wsgi]
+application = keystone.server.wsgi_app:init_application
 EOF
 
     # 验证配置文件格式完整性
@@ -577,15 +585,70 @@ EOF
 
         keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone || \
             handle_error "keystone fernet 设置失败" "keystone初始化"
-        keystone-manage credential_setup --keystone-user keystone --keystone-group keystone || \
+    else
+        handle_error "keystone-manage 命令未找到" "keystone安装"
+    fi
+    
+    # 确保httpd配置中的ServerName使用IP地址
+    if grep -q "ServerName" /etc/httpd/conf/httpd.conf; then
+        sed -i "s/ServerName.*/ServerName $HOST_IP/" /etc/httpd/conf/httpd.conf
+    else
+        echo "ServerName $HOST_IP" >> /etc/httpd/conf/httpd.conf
+    fi
+    
+    # 创建自定义keystone WSGI配置文件
+    cat > /etc/httpd/conf.d/wsgi-keystone.conf << EOF
+Listen 5000
+<VirtualHost *:5000>
+    WSGIDaemonProcess keystone-public processes=5 threads=1 user=keystone group=keystone display-name=%{GROUP}
+    WSGIProcessGroup keystone-public
+    WSGIScriptAlias / /usr/bin/keystone-wsgi-public
+    WSGIApplicationGroup %{GLOBAL}
+    WSGIPassAuthorization On
+    LimitRequestBody 114688
+    <IfVersion >= 2.4>
+      ErrorLogFormat "%{cu}t %M"
+    </IfVersion>
+    ErrorLog /var/log/httpd/keystone.log
+    CustomLog /var/log/httpd/keystone_access.log combined
+    <Directory /usr/bin>
+        <IfVersion >= 2.4>
+            Require all granted
+        </IfVersion>
+        <IfVersion < 2.4>
+            Order allow,deny
+            Allow from all
+        </IfVersion>
+    </Directory>
+</VirtualHost>
+Alias /identity /usr/bin/keystone-wsgi-public
+<Location /identity>
+    SetHandler wsgi-script
+    Options +ExecCGI
+    WSGIProcessGroup keystone-public
+    WSGIApplicationGroup %{GLOBAL}
+    WSGIPassAuthorization On
+</Location>
+EOF
+
+    # 确保日志文件存在且权限正确
+    mkdir -p /var/log/httpd
+    touch /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
+    chown keystone:keystone /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
+    chmod 644 /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
+
+    systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
+    systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
+    
+    keystone-manage credential_setup --keystone-user keystone --keystone-group keystone || \
             handle_error "keystone credential 设置失败" "keystone初始化"
 
         # 确保httpd服务启动
         MAX_RETRIES=3
         WAIT_TIME=5
         for ((i=1; i<=MAX_RETRIES; i++)); do
-            systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
-            systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
+            systemctl enable httpd 2>/dev/null || echo "警告: httpd 服务启用失败"
+            systemctl start httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
             
             if systemctl is-active --quiet httpd; then
                 echo -e "\\033[32m✓ httpd 服务已启动\\033[0m"
@@ -619,6 +682,9 @@ EOF
 
         # 增强bootstrap错误处理
         echo "正在执行keystone bootstrap..."
+        # 清理ADMIN_PASS变量，确保不含特殊字符
+        ADMIN_PASS=$(echo "$ADMIN_PASS" | tr -d '\n\r' | tr -cd '[:print:]')
+        
         for i in {1..3}; do
             if keystone-manage bootstrap \
                 --bootstrap-password $ADMIN_PASS \
@@ -631,25 +697,35 @@ EOF
             else
                 echo -e "\\033[33m警告: keystone bootstrap 尝试 $i 失败，3秒后重试...\\033[0m"
                 sleep 3
-                
                 # 检查5000端口占用情况
                 if ss -tuln | grep ':5000' > /dev/null; then
                     echo -e "\\033[31m错误: 端口5000已被占用，请检查冲突服务\\033[0m"
                 fi
-                
                 # 检查keystone日志
                 if [ -f /var/log/keystone/keystone.log ]; then
                     echo -e "\\033[31m最近5行错误日志：\\033[0m"
-                    grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
+                    grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 5
+                fi
+                # 检查httpd错误日志
+                if [ -f /var/log/httpd/error_log ]; then
+                    echo -e "\\033[31mhttpd错误日志：\\033[0m"
+                    grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 10
                 fi
             fi
         done
+    fi
 
-        # 增强服务验证机制
-        echo "正在验证keystone服务可用性..."
-        MAX_RETRIES=5
-        WAIT_TIME=5
+    # 删除重复的httpd启动代码，避免冲突
+    # 已在前面配置了httpd服务，此处不再重复启动
+
+    # 增强服务验证机制
+    echo "正在验证keystone服务可用性..."
+    MAX_RETRIES=5
+    WAIT_TIME=5
+        export OS_PROJECT_DOMAIN_NAME=Default
         export OS_AUTH_URL=http://$HOST_IP:5000/v3
+        export OS_IDENTITY_API_VERSION=3
+
         for ((i=1; i<=MAX_RETRIES; i++)); do
             # 确保httpd服务已运行
             if ! systemctl is-active --quiet httpd; then
@@ -658,6 +734,12 @@ EOF
                 systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
                 sleep 3
             fi
+            
+            # 显示当前环境变量用于调试
+            echo "调试信息 - 当前环境变量:"
+            echo "OS_AUTH_URL=$OS_AUTH_URL"
+            echo "OS_USERNAME=$OS_USERNAME"
+            echo "OS_PASSWORD=${ADMIN_PASS:0:3}***"  # 隐藏部分密码
             
             if openstack token issue &> /dev/null; then
                 echo -e "\\033[32m✓ keystone服务验证成功\\033[0m"
@@ -674,7 +756,28 @@ EOF
                 # 检查keystone日志
                 if [ -f /var/log/keystone/keystone.log ]; then
                     echo -e "\\033[31m最近5行错误日志：\\033[0m"
-                    grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
+                    grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 5
+                fi
+                
+                # 检查httpd错误日志
+                if [ -f /var/log/httpd/error_log ]; then
+                    echo -e "\\033[31mhttpd最近5行错误日志：\\033[0m"
+                    grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 5
+                fi
+            fi
+            
+            # 如果是最后一次尝试，显示更多诊断信息
+            if [ $i -eq $MAX_RETRIES ]; then
+                echo -e "\\033[31m达到最大重试次数，显示详细诊断信息:\\033[0m"
+                echo "检查端口监听状态:"
+                ss -tuln | grep 5000 || echo "端口5000未监听"
+                
+                echo "检查httpd配置:"
+                httpd -t 2>&1 || echo "httpd配置检查失败"
+                
+                if [ -f /etc/keystone/keystone.conf ]; then
+                    echo "检查keystone配置文件关键内容:"
+                    grep -E "(^connection|^provider)" /etc/keystone/keystone.conf
                 fi
             fi
         done
@@ -704,7 +807,7 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_NAME=admin
 export OS_USERNAME=admin
 export OS_PASSWORD=$ADMIN_PASS
-export OS_AUTH_URL=http://$HOST_NAME:5000/v3
+export OS_AUTH_URL=http://$HOST_IP:5000/v3
 export OS_IDENTITY_API_VERSION=3
 export OS_IMAGE_API_VERSION=2
 EOF
@@ -787,17 +890,17 @@ if command -v openstack &> /dev/null; then
     fi
     
     echo "创建glance public端点..."
-    if ! openstack endpoint create --region RegionOne image public http://$HOST_NAME:9292; then
+    if ! openstack endpoint create --region RegionOne image public http://$HOST_IP:9292; then
         handle_error "创建 glance public 端点失败" "glance初始化"
     fi
     
     echo "创建glance internal端点..."
-    if ! openstack endpoint create --region RegionOne image internal http://$HOST_NAME:9292; then
+    if ! openstack endpoint create --region RegionOne image internal http://$HOST_IP:9292; then
         handle_error "创建 glance internal 端点失败" "glance初始化"
     fi
     
     echo "创建glance admin端点..."
-    if ! openstack endpoint create --region RegionOne image admin http://$HOST_NAME:9292; then
+    if ! openstack endpoint create --region RegionOne image admin http://$HOST_IP:9292; then
         handle_error "创建 glance admin 端点失败" "glance初始化"
     fi
 else
