@@ -539,17 +539,19 @@ eof
     fi
     
     # 确保httpd配置中的ServerName使用主机名
-    if grep -q "ServerName" /etc/httpd/conf/httpd.conf; then
-        sed -i "s/ServerName.*/ServerName controller/" /etc/httpd/conf/httpd.conf
+    if grep -q "^ServerName" /etc/httpd/conf/httpd.conf; then
+        sed -i "s/^ServerName.*/ServerName $HOST_IP/" /etc/httpd/conf/httpd.conf
     else
-        echo "ServerName controller" >> /etc/httpd/conf/httpd.conf
+        echo "ServerName $HOST_IP" >> /etc/httpd/conf/httpd.conf
     fi
     
-    # 创建自定义keystone WSGI配置文件（使用官方推荐方式）
-    ln -sf /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/
-    
-    systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
+    # 重新启动httpd服务使配置生效
     systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
+    
+    # 检查并确保符号链接正确创建
+    if [ ! -L /etc/httpd/conf.d/wsgi-keystone.conf ]; then
+        ln -sf /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/
+    fi
     
     keystone-manage credential_setup --keystone-user keystone --keystone-group keystone || \
             handle_error "keystone credential 设置失败" "keystone初始化"
@@ -674,7 +676,7 @@ EOF
             echo "调试信息 - 当前环境变量:"
             echo "OS_AUTH_URL=$OS_AUTH_URL"
             echo "OS_USERNAME=$OS_USERNAME"
-            echo "OS_PASSWORD=${ADMIN_PASS:0:3}***"  # 隐藏部分密码
+            echo "OS_PASSWORD=$ADMIN_PASS"  # 显示完整密码
             
             if openstack token issue &> /dev/null; then
                 echo -e "\\033[32m✓ keystone服务验证成功\\033[0m"
@@ -690,14 +692,20 @@ EOF
                 
                 # 检查keystone日志
                 if [ -f /var/log/keystone/keystone.log ]; then
-                    echo -e "\\033[31m最近5行错误日志：\\033[0m"
-                    grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 5
+                    echo -e "\\033[31m最近10行keystone错误日志：\\033[0m"
+                    grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 10
                 fi
                 
                 # 检查httpd错误日志
                 if [ -f /var/log/httpd/error_log ]; then
-                    echo -e "\\033[31mhttpd最近5行错误日志：\\033[0m"
-                    grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 5
+                    echo -e "\\033[31mhttpd最近10行错误日志：\\033[0m"
+                    grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 10
+                fi
+                
+                # 检查访问日志
+                if [ -f /var/log/httpd/keystone_access.log ]; then
+                    echo -e "\\033[33m最近10行访问日志：\\033[0m"
+                    tail -n 10 /var/log/httpd/keystone_access.log
                 fi
             fi
             
@@ -719,6 +727,39 @@ EOF
                     echo "检查keystone配置文件关键内容:"
                     grep -E "(^connection|^provider)" /etc/keystone/keystone.conf
                 fi
+                
+                # 添加手动curl测试
+                echo "尝试手动获取token进行调试:"
+                curl -i \
+                  -H "Content-Type: application/json" \
+                  -d '
+                {
+                    "auth": {
+                        "identity": {
+                            "methods": [
+                                "password"
+                            ],
+                            "password": {
+                                "user": {
+                                    "name": "admin",
+                                    "domain": {
+                                        "name": "Default"
+                                    },
+                                    "password": "$ADMIN_PASS"
+                                }
+                            }
+                        },
+                        "scope": {
+                            "project": {
+                                "name": "admin",
+                                "domain": {
+                                    "name": "Default"
+                                }
+                            }
+                        }
+                    }
+                }' \
+                http://$HOST_IP:5000/v3/auth/tokens 2>&1 || echo "curl请求失败"
             fi
         done
 
