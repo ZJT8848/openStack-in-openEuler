@@ -199,10 +199,12 @@ if which sshpass &> /dev/null; then
 
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
 
-        # 修复：确保主机名是有效格式
+        # 修复：增强主机名格式验证逻辑
         if [[ ! "$hostname" =~ ^[a-zA-Z0-9.-]+$ ]]; then
             echo -e "\\033[31m错误详情：无效的主机名格式 '$hostname'，应为字母数字和点连字符组合\\033[0m"
-            continue
+            echo -e "\\033[33m当前HOST_IP值: '$HOST_IP'\\033[0m"
+            echo -e "\\033[33m当前节点信息: '$node'\\033[0m"
+            handle_error "无效的主机名格式: $hostname" "SSH密钥分发"
         fi
 
         # 修复：使用IP地址作为主机标识
@@ -401,11 +403,12 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
         cp /etc/keystone/keystone.conf{,.bak}
     fi
 
-    # 确保关键变量纯净（修复配置文件生成错误）
-    HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r')
-    KEYSTONE_DBPASS=$(echo "$KEYSTONE_DBPASS" | tr -d '\\n\\r')
-        
-    cat > /etc/keystone/keystone.conf << eof
+    # 强化变量清理 - 严格过滤非可打印字符
+    HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
+    KEYSTONE_DBPASS=$(echo "$KEYSTONE_DBPASS" | tr -d '\\n\\r' | tr -cd '[:print:]')
+
+    # 使用安全分隔符防止heredoc破坏
+    cat > /etc/keystone/keystone.conf << '_EOF_'
 [DEFAULT]
 log_dir = /var/log/keystone
 [application_credential]
@@ -453,7 +456,15 @@ provider = fernet
 [trust]
 [unified_limit]
 [wsgi]
-eof
+_EOF_
+
+    # 验证配置文件格式完整性
+    if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@$HOST_IP/keystone" /etc/keystone/keystone.conf; then
+        echo -e "\\033[31m错误: keystone.conf配置文件生成失败，内容不完整\\033[0m"
+        echo "生成的配置文件内容："
+        cat /etc/keystone/keystone.conf
+        handle_error "keystone.conf配置文件生成失败" "配置生成"
+    fi
 
     if command -v keystone-manage &> /dev/null; then
         # 确保数据库服务已启动
