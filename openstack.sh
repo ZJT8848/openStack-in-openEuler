@@ -461,100 +461,35 @@ EOF
 
     echo "✓ Keystone服务安装完成"
 
-# 安装glance服务
-echo "安装glance服务..."
+# 安装Glance服务
+function install_glance() {
+    echo "正在安装Glance服务..."
 
-# 检查数据库是否可用
-if command -v mysql &> /dev/null; then
-    # glance mysql
-    mysql -uroot -e "create database IF NOT EXISTS glance ;" 2>/dev/null || echo "警告: 创建 glance 数据库失败"
-    mysql -uroot -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost' IDENTIFIED BY '$GLANCE_DBPASS' ;" 2>/dev/null || echo "警告: 授权 glance 数据库失败"
-    mysql -uroot -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY '$GLANCE_DBPASS' ;" 2>/dev/null || echo "警告: 授权 glance 数据库失败"
-else
-    echo "警告: 数据库不可用，跳过 glance 数据库配置"
-fi
+    # 创建数据库和用户
+    mysql -uroot -p$DB_PASS -e "create database IF NOT EXISTS glance ;" || handle_error "Glance数据库创建失败" "Glance安装"
+    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost' IDENTIFIED BY '$GLANCE_DBPASS' ;" || handle_error "Glance本地权限设置失败" "Glance安装"
+    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY '$GLANCE_DBPASS' ;" || handle_error "Glance远程权限设置失败" "Glance安装"
 
-# 增强服务验证机制
-echo "正在验证keystone服务可用性..."
-MAX_RETRIES=5
-WAIT_TIME=5
-for ((i=1; i<=MAX_RETRIES; i++)); do
-    if openstack token issue &> /dev/null; then
-        echo -e "\033[32m✓ keystone服务验证成功\033[0m"
-        break
-    else
-        echo -e "\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\033[0m"
-        sleep $WAIT_TIME
-        
-        # 检查服务状态
-        if ! systemctl is-active --quiet httpd; then
-            echo -e "\033[31m错误: httpd 服务未运行，请检查Apache状态\033[0m"
-        fi
-        
-        # 检查keystone日志
-        if [ -f /var/log/keystone/keystone.log ]; then
-            echo -e "\033[31m最近5行错误日志：\033[0m"
-            grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
-        fi
-    fi
-done
+    # 创建OpenStack用户和服务
+    openstack user create --domain $DOMAIN_NAME --password $GLANCE_PASS glance || handle_error "Glance用户创建失败" "Glance安装"
+    openstack role add --project service --user glance admin || handle_error "Glance角色添加失败" "Glance安装"
+    openstack service create --name glance --description "OpenStack Image" image || handle_error "Glance服务创建失败" "Glance安装"
+    openstack endpoint create --region RegionOne image public http://$HOST_NAME:9292 || handle_error "Glance公共端点创建失败" "Glance安装"
+    openstack endpoint create --region RegionOne image internal http://$HOST_NAME:9292 || handle_error "Glance内部端点创建失败" "Glance安装"
+    openstack endpoint create --region RegionOne image admin http://$HOST_NAME:9292 || handle_error "Glance管理端点创建失败" "Glance安装"
 
-if ! openstack token issue &> /dev/null; then
-    echo -e "\033[31m详细错误日志：\033[0m"
-    if [ -f /var/log/keystone/keystone.log ]; then
-        tail -n 20 /var/log/keystone/keystone.log
-    else
-        echo "无法找到keystone日志文件"
-    fi
-    handle_error "glance服务依赖的keystone服务未就绪" "服务依赖检查"
-fi
+    # 安装Glance软件包
+    yum install -y openstack-glance || handle_error "Glance软件包安装失败" "Glance安装"
 
-if command -v openstack &> /dev/null; then
-    echo "创建glance用户..."
-    if ! openstack user create --domain $DOMAIN_NAME --password $GLANCE_PASS glance; then
-        echo -e "\033[31m错误详情：检查keystone服务状态\033[0m"
-        handle_error "创建 glance 用户失败，请检查keystone服务状态" "glance初始化"
-    fi
-    
-    echo "添加glance角色..."
-    if ! openstack role add --project service --user glance admin; then
-        handle_error "添加 glance 角色失败" "glance初始化"
-    fi
-    
-    echo "创建glance服务..."
-    if ! openstack service create --name glance --description "OpenStack Image" image; then
-        handle_error "创建 glance 服务失败" "glance初始化"
-    fi
-    
-    echo "创建glance public端点..."
-    if ! openstack endpoint create --region RegionOne image public http://$HOST_IP:9292; then
-        handle_error "创建 glance public 端点失败" "glance初始化"
-    fi
-    
-    echo "创建glance internal端点..."
-    if ! openstack endpoint create --region RegionOne image internal http://$HOST_IP:9292; then
-        handle_error "创建 glance internal 端点失败" "glance初始化"
-    fi
-    
-    echo "创建glance admin端点..."
-    if ! openstack endpoint create --region RegionOne image admin http://$HOST_IP:9292; then
-        handle_error "创建 glance admin 端点失败" "glance初始化"
-    fi
-else
-    handle_error "openstack 命令未找到，无法配置glance服务" "glance安装"
-fi
-
-if yum install -y openstack-glance; then
-    if [ -f /etc/glance/glance-api.conf ]; then
-        cp /etc/glance/glance-api.conf{,.bak}
-    fi
+    # 备份并配置glance-api.conf
+    cp /etc/glance/glance-api.conf{,.bak} || handle_error "Glance配置备份失败" "Glance安装"
 
     cat > /etc/glance/glance-api.conf << eof
 [DEFAULT]
 [cinder]
 [cors]
 [database]
-connection = mysql+pymysql://glance:$GLANCE_DBPASS@$HOST_IP/glance
+connection = mysql+pymysql://glance:$GLANCE_DBPASS@$HOST_NAME/glance
 [file]
 [glance.store.http.store]
 [glance.store.rbd.store]
@@ -592,23 +527,18 @@ flavor = keystone
 [taskflow_executor]
 eof
 
-    if command -v glance-manage &> /dev/null; then
-        echo "正在同步glance数据库..."
-        if ! su -s /bin/sh -c "glance-manage db_sync" glance; then
-            echo -e "\033[31m错误详情：检查/var/log/glance/api.log中的错误\033[0m"
-            handle_error "glance数据库同步失败，请检查keystone服务状态和数据库配置" "glance初始化"
-        fi
-    else
-        handle_error "glance-manage 命令未找到" "glance安装"
-    fi
-    
-    systemctl enable --now openstack-glance-api.service 2>/dev/null || \
-        handle_error "glance-api 服务启动失败" "glance服务"
-    systemctl restart openstack-glance-api 2>/dev/null || \
-        handle_error "glance-api 服务重启失败" "glance服务"
-else
-    handle_error "glance 相关软件包安装失败" "glance安装"
-fi
+    # 同步数据库
+    su -s /bin/sh -c "glance-manage db_sync" glance || handle_error "Glance数据库同步失败" "Glance安装"
+
+    # 启动Glance服务
+    systemctl enable --now openstack-glance-api.service || handle_error "Glance服务启动失败" "Glance安装"
+    systemctl restart openstack-glance-api || handle_error "Glance服务重启失败" "Glance安装"
+
+    echo "✓ Glance服务安装完成"
+}
+
+# 在主流程中调用Glance安装函数
+install_glance
 
 # 安装placement服务
 echo "安装placement服务..."
