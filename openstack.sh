@@ -139,7 +139,7 @@ cat > /etc/motd <<EOF
  ################################
 EOF
 # 禁用selinux
-sed -i 's/SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+sed -i 's/SELINUX=.*/SELINUX=permissive/g' /etc/selinux/config
 setenforce 0
 # firewalld
 systemctl stop firewalld
@@ -670,87 +670,89 @@ EOF
     # 已在前面配置了httpd服务，此处不再重复启动
 
     # 增强服务验证机制
-    echo "正在验证keystone服务可用性..."
-    MAX_RETRIES=5
-    WAIT_TIME=5
-        export OS_PROJECT_DOMAIN_NAME=Default
-        export OS_AUTH_URL=http://$HOST_IP:5000/v3
-        export OS_IDENTITY_API_VERSION=3
+echo "正在验证keystone服务可用性..."
+MAX_RETRIES=10
+WAIT_TIME=10
+for ((i=1; i<=MAX_RETRIES; i++)); do
+    # 确保httpd服务已运行
+    if ! systemctl is-active --quiet httpd; then
+        echo -e "\033[31m错误: httpd 服务未运行，请检查Apache状态\033[0m"
+        # 尝试重新启动httpd
+        systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
+        sleep 3
+    fi
+    
+    # 检查5000端口是否监听
+    if ! ss -tuln | grep ':5000' > /dev/null; then
+        echo -e "\033[31m错误: 5000端口未监听，请检查Apache配置\033[0m"
+    fi
+    
+    # 检查keystone服务API是否可达
+    if curl -s -o /dev/null -w "%{http_code}" http://$HOST_IP:5000/v3 > /dev/null; then
+        echo -e "\033[32m✓ keystone API 可达\033[0m"
+    else
+        echo -e "\033[31m错误: keystone API 不可达\033[0m"
+    fi
 
-        for ((i=1; i<=MAX_RETRIES; i++)); do
-            # 确保httpd服务已运行
-            if ! systemctl is-active --quiet httpd; then
-                echo -e "\\033[31m错误: httpd 服务未运行，请检查Apache状态\\033[0m"
-                # 尝试重新启动httpd
-                systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
-                sleep 3
-            fi
-            
-            # 显示当前环境变量用于调试
-            echo "调试信息 - 当前环境变量:"
-            echo "OS_AUTH_URL=$OS_AUTH_URL"
-            echo "OS_USERNAME=$OS_USERNAME"
-            echo "OS_PASSWORD=${ADMIN_PASS:0:3}***"  # 隐藏部分密码
-            
-            if openstack token issue &> /dev/null; then
-                echo -e "\\033[32m✓ keystone服务验证成功\\033[0m"
-                break
-            else
-                echo -e "\\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\\033[0m"
-                sleep $WAIT_TIME
-                
-                # 检查服务状态
-                if ! systemctl is-active --quiet httpd; then
-                    echo -e "\\033[31m错误: httpd 服务未运行，请检查Apache状态\\033[0m"
-                fi
-                
-                # 检查keystone日志
-                if [ -f /var/log/keystone/keystone.log ]; then
-                    echo -e "\\033[31m最近5行错误日志：\\033[0m"
-                    grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 5
-                fi
-                
-                # 检查httpd错误日志
-                if [ -f /var/log/httpd/error_log ]; then
-                    echo -e "\\033[31mhttpd最近5行错误日志：\\033[0m"
-                    grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 5
-                fi
-            fi
-            
-            # 如果是最后一次尝试，显示更多诊断信息
-            if [ $i -eq $MAX_RETRIES ]; then
-                echo -e "\\033[31m达到最大重试次数，显示详细诊断信息:\\033[0m"
-                echo "检查端口监听状态:"
-                ss -tuln | grep 5000 || echo "端口5000未监听"
-                # 显示占用5000端口的进程信息
-                if ss -tuln | grep ':5000' > /dev/null; then
-                    echo "当前占用5000端口的进程:"
-                    lsof -i :5000 2>/dev/null || netstat -tlnp | grep :5000
-                fi
-                
-                echo "检查httpd配置:"
-                httpd -t 2>&1 || echo "httpd配置检查失败"
-                
-                if [ -f /etc/keystone/keystone.conf ]; then
-                    echo "检查keystone配置文件关键内容:"
-                    grep -E "(^connection|^provider)" /etc/keystone/keystone.conf
-                fi
-            fi
-        done
-
-        # 如果最终验证失败
-        if ! openstack token issue &> /dev/null; then
-            echo -e "\\033[31m详细错误日志：\\033[0m"
-            if [ -f /var/log/keystone/keystone.log ]; then
-                tail -n 20 /var/log/keystone/keystone.log
-            else
-                echo "无法找到keystone日志文件"
-            fi
-            # 添加端口诊断信息
-            echo -e "\\033[31m当前端口状态：\\033[0m"
-            ss -tuln | grep ':5000' || echo "端口5000未被监听"
-            handle_error "keystone bootstrap 失败，请检查/var/log/keystone/keystone.log" "keystone初始化"
+    if openstack token issue &> /dev/null; then
+        echo -e "\033[32m✓ keystone服务验证成功\033[0m"
+        break
+    else
+        echo -e "\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\033[0m"
+        sleep $WAIT_TIME
+        
+        # 检查服务状态
+        if ! systemctl is-active --quiet httpd; then
+            echo -e "\\033[31m错误: httpd 服务未运行，请检查Apache状态\\033[0m"
         fi
+        
+        # 检查keystone日志
+        if [ -f /var/log/keystone/keystone.log ]; then
+            echo -e "\\033[31m最近5行错误日志：\\033[0m"
+            grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
+        fi
+        
+        # 检查httpd错误日志
+        if [ -f /var/log/httpd/error_log ]; then
+            echo -e "\\033[31mhttpd最近5行错误日志：\\033[0m"
+            grep -i 'error' /var/log/httpd/error_log | tail -n 5
+        fi
+    fi
+    
+    # 如果是最后一次尝试，显示更多诊断信息
+    if [ $i -eq $MAX_RETRIES ]; then
+        echo -e "\\033[31m达到最大重试次数，显示详细诊断信息:\\033[0m"
+        echo "检查端口监听状态:"
+        ss -tuln | grep 5000 || echo "端口5000未监听"
+        # 显示占用5000端口的进程信息
+        if ss -tuln | grep ':5000' > /dev/null; then
+            echo "当前占用5000端口的进程:"
+            lsof -i :5000 2>/dev/null || netstat -tlnp | grep :5000
+        fi
+        
+        echo "检查httpd配置:"
+        httpd -t 2>&1 || echo "httpd配置检查失败"
+        
+        if [ -f /etc/keystone/keystone.conf ]; then
+            echo "检查keystone配置文件关键内容:"
+            grep -E "(^connection|^provider)" /etc/keystone/keystone.conf
+        fi
+    fi
+done
+
+# 如果最终验证失败
+if ! openstack token issue &> /dev/null; then
+    echo -e "\\033[31m详细错误日志：\\033[0m"
+    if [ -f /var/log/keystone/keystone.log ]; then
+        tail -n 20 /var/log/keystone/keystone.log
+    else
+        echo "无法找到keystone日志文件"
+    fi
+    # 添加端口诊断信息
+    echo -e "\\033[31m当前端口状态：\\033[0m"
+    ss -tuln | grep ':5000' || echo "端口5000未被监听"
+    handle_error "keystone bootstrap 失败，请检查/var/log/keystone/keystone.log" "keystone初始化"
+fi
     else
         handle_error "keystone-manage 命令未找到" "keystone安装"
     fi
@@ -772,7 +774,7 @@ export OS_IMAGE_API_VERSION=2
 EOF
 
     source /etc/keystone/admin-openrc.sh 2>/dev/null || echo "警告: 加载 admin-openrc 失败"
-    
+
     if yum install -y python3-openstackclient; then
         openstack project create --domain default --description "Service Project" service 2>/dev/null || echo "警告: 创建 service 项目失败"
         openstack token issue 2>/dev/null || echo "警告: 获取 token 失败"
