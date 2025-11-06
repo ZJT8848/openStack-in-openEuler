@@ -1,19 +1,10 @@
 #!/bin/bash
 
-# OpenStack环境初始化和安装脚本
-# 整合所有步骤到一个脚本中
+# OpenStack环境初始化和安装脚本（单机版）
+# 专为单机部署设计，移除了多机部署相关功能
 
-# 定义节点信息
-NODES=("192.168.1.204 controller")
-
-# 定义当前节点的密码（默认集群统一密码）
+# 定义当前节点的密码（默认密码）
 HOST_PASS="000000"
-
-# 时间同步的目标节点
-TIME_SERVER=controller
-
-# 时间同步的地址段
-TIME_SERVER_IP=192.168.1.0/24
 
 # 定义中文错误处理函数
 handle_error() {
@@ -100,7 +91,7 @@ fi
 # 双重清理确保HOST_IP纯净（仅清理换行符和回车符）
 HOST_IP=$(echo "$HOST_IP" | tr -d '\n\r')
 
-# 验证HOST_IP是否为有效IP格式（修复正则表达式转义问题）
+# 验证HOST_IP是否为有效IP格式
 if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     # 添加十六进制转储诊断（帮助识别隐藏字符）
     hex_dump=$(echo -n "$HOST_IP" | xxd -p 2>/dev/null || echo "无法生成十六进制转储")
@@ -110,6 +101,20 @@ if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 # 附加验证：确保IP不是全0或回环地址
+if [[ "$HOST_IP" =~ ^127\.0\.0\.1$ || "$HOST_IP" =~ ^0\.0\.0\.0$ ]]; then
+    echo -e "\033[31m错误：检测到回环地址或无效地址: $HOST_IP\033[0m" >&2
+    handle_error "IP地址无效（回环或全0）: $HOST_IP" "IP验证"
+fi
+
+# 根据主机IP自动推导网络段
+NETWORK=$(echo $HOST_IP | awk -F. '{print $1"."$2"."$3".0/24"}')
+
+# 创建中文欢迎界面
+cat > /etc/motd <<EOF 
+ ################################
+ #     欢迎使用 OpenStack      #
+ ################################
+EOF
 if [[ "$HOST_IP" =~ ^127\.0\.0\.1$ || "$HOST_IP" =~ ^0\.0\.0\.0$ ]]; then
     echo -e "\033[31m错误：检测到回环地址或无效地址: $HOST_IP\033[0m" >&2
     handle_error "IP地址无效（回环或全0）: $HOST_IP" "IP验证"
@@ -231,6 +236,10 @@ else
     echo "$(date '+%Y-%m-%d %H:%M:%S') - SSH密钥已存在" >> "$LOG_FILE"
 fi
 
+# 在单机部署环境中，不需要分发SSH密钥到其他节点
+echo "$(date '+%Y-%m-%d %H:%M:%S') - 单机部署模式：跳过SSH密钥分发流程" >> "$LOG_FILE"
+echo -e "\033[32m✓ 单机部署模式：跳过SSH密钥分发流程\033[0m"
+
 # 检查并安装 sshpass 工具
 if ! which sshpass &> /dev/null; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 工具未安装，正在安装 sshpass..." >> "$LOG_FILE"
@@ -245,47 +254,75 @@ else
     echo "$(date '+%Y-%m-%d %H:%M:%S') - sshpass 工具已安装" >> "$LOG_FILE"
 fi
 
-# 遍历所有节点（如果有sshpass）
-if which sshpass &> /dev/null; then
-    for node in "${NODES[@]}"; do
-        ip=$(echo "$node" | awk '{print $1}' | tr -d '\\n\\r')
-        hostname=$(echo "$node" | awk '{print $2}' | tr -d '\\n\\r')
-
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - 复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
-
-        # 修复：增强主机名格式验证逻辑
-        if [[ ! "$hostname" =~ ^[a-zA-Z0-9.-]+$ ]]; then
-            echo -e "\\033[31m错误详情：无效的主机名格式 '$hostname'，应为字母数字和点连字符组合\\033[0m"
-            echo -e "\\033[33m当前HOST_IP值: '$HOST_IP'\\033[0m"
-            echo -e "\\033[33m当前节点信息: '$node'\\033[0m"
-            handle_error "无效的主机名格式: $hostname" "SSH密钥分发"
-        fi
-
-        # 修复：使用IP地址作为主机标识
-        sshpass -p "$HOST_PASS" ssh-copy-id -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa.pub "$ip" || \
-            echo -e "\\033[31m错误详情：SSH密钥复制到 $hostname ($ip) 失败，请检查网络连接和密码\\033[0m"
-
-        if [[ $? -eq 0 ]]; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - 成功复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
-        else
-            echo "$(date '+%Y-%m-%d %H:%M:%S') - 复制SSH密钥到节点 $hostname ($ip) 失败" >> "$LOG_FILE"
-        fi
-    done
-fi
-
-# 时间同步
-name=$(hostname)
-if [[ $name == $TIME_SERVER ]]; then
-    # 配置当前节点为时间同步源
-    sed -i '3,4s/^/#/g' /etc/chrony.conf
-    sed -i "7s/^/server $TIME_SERVER iburst/g" /etc/chrony.conf
-    echo "allow $TIME_SERVER_IP" >> /etc/chrony.conf
-    echo "local stratum 10" >> /etc/chrony.conf
+# 检查是否为单机部署模式
+if [[ "$SINGLE_NODE_DEPLOYMENT" == true ]]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - 检测到单机部署模式，跳过SSH密钥分发流程" >> "$LOG_FILE"
+    echo -e "\033[32m✓ 单机部署模式：跳过SSH密钥分发流程\033[0m"
 else
-    # 配置当前节点同步到目标节点
-    sed -i '3,4s/^/#/g' /etc/chrony.conf
-    sed -i "7s/^/server $TIME_SERVER iburst/g" /etc/chrony.conf
+    # 遍历所有节点（如果有sshpass）
+    if which sshpass &> /dev/null; then
+        for node in "${NODES[@]}"; do
+            # 提取IP和主机名
+            ip=$(echo "$node" | awk '{print $1}' | tr -d '\n\r')
+            hostname=$(echo "$node" | awk '{print $2}' | tr -d '\n\r')
+            
+            # 验证IP地址格式
+            if ! [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo -e "\033[31m错误详情：无效的IP地址格式 '$ip'\\033[0m"
+                handle_error "无效的IP地址格式: $ip" "SSH密钥分发"
+            fi
+
+            echo "$(date '+%Y-%m-%d %H:%M:%S') - 复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
+
+            # 主机名格式验证
+            if [[ ! "$hostname" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+                echo -e "\\033[31m错误详情：无效的主机名格式 '$hostname'，应为字母数字和点连字符组合\\033[0m"
+                echo -e "\\033[33m当前HOST_IP值: '$HOST_IP'\\033[0m"
+                echo -e "\\033[33m当前节点信息: '$node'\\033[0m"
+                handle_error "无效的主机名格式: $hostname" "SSH密钥分发"
+            fi
+
+            # 在尝试SSH连接前先测试网络连通性
+            if ! ping -c 3 "$ip" >/dev/null 2>&1; then
+                echo -e "\\033[31m错误详情：无法ping通目标主机 $hostname ($ip)，请检查网络连接\\033[0m"
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - 无法ping通节点 $hostname ($ip)" >> "$LOG_FILE"
+                continue
+            fi
+            
+            # 测试SSH端口连通性
+            if ! timeout 10 bash -c "echo >/dev/tcp/$ip/22" 2>/dev/null; then
+                echo -e "\\033[31m错误详情：无法连接到 $hostname ($ip) 的SSH端口，请检查防火墙和服务状态\\033[0m"
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - 无法连接到节点 $hostname ($ip) 的SSH端口" >> "$LOG_FILE"
+                continue
+            fi
+
+            # 使用IP地址作为主机标识进行SSH密钥分发
+            if sshpass -p "$HOST_PASS" ssh-copy-id -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /root/.ssh/id_rsa.pub "root@$ip" 2>/dev/null; then
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - 成功复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
+            else
+                echo -e "\\033[31m错误详情：SSH密钥复制到 $hostname ($ip) 失败，请检查网络连接和密码\\033[0m"
+                echo -e "\\033[33m提示：请确认密码 '$HOST_PASS' 是否正确，以及目标主机SSH服务是否正常运行\\033[0m"
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - 复制SSH密钥到节点 $hostname ($ip) 失败" >> "$LOG_FILE"
+            fi
+        done
+    fi
 fi
+
+# 时间同步（单机部署模式）
+echo "$(date '+%Y-%m-%d %H:%M:%S') - 配置单机时间同步" >> "$LOG_FILE"
+name=$(hostname)
+
+# 在单机部署模式下，将当前节点配置为时间同步源
+sed -i '3,4s/^/#/g' /etc/chrony.conf
+sed -i "7s/^/server $HOST_IP iburst/g" /etc/chrony.conf
+echo "allow $NETWORK" >> /etc/chrony.conf
+echo "local stratum 10" >> /etc/chrony.conf
+
+# 重启并启用 chrony 服务
+systemctl restart chronyd 2>/dev/null || echo "警告: chronyd 服务重启失败"
+systemctl enable chronyd >> /dev/null 2>&1
+
+echo -e "\033[32m✓ 配置单机时间同步完成\033[0m"
 
 # 重启并启用 chrony 服务
 systemctl restart chronyd 2>/dev/null || echo "警告: chronyd 服务重启失败"
@@ -461,8 +498,9 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
     HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
     KEYSTONE_DBPASS=$(echo "$KEYSTONE_DBPASS" | tr -d '\\n\\r' | tr -cd '[:print:]')
 
-    # 使用安全分隔符防止heredoc破坏
-    cat > /etc/keystone/keystone.conf << '_EOF_'
+    # 修复keystone配置文件生成问题
+    # 使用正确的heredoc语法，确保变量能够正确替换
+    cat > /etc/keystone/keystone.conf << EOF
 [DEFAULT]
 log_dir = /var/log/keystone
 [application_credential]
@@ -510,7 +548,7 @@ provider = fernet
 [trust]
 [unified_limit]
 [wsgi]
-_EOF_
+EOF
 
     # 验证配置文件格式完整性
     if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@$HOST_IP/keystone" /etc/keystone/keystone.conf; then
