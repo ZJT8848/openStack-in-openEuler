@@ -457,45 +457,55 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
     fi
     # 修复keystone配置文件生成问题
     # 使用正确的heredoc语法，确保变量能够正确替换
-    cat > /etc/keystone/keystone.conf << EOF
+    cat > /etc/keystone/keystone.conf << eof
 [DEFAULT]
 log_dir = /var/log/keystone
-log_file = keystone.log
-debug = True
-verbose = True
+[application_credential]
+[assignment]
+[auth]
+[cache]
+[catalog]
+[cors]
+[credential]
 [database]
 connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_IP/keystone
+[domain_config]
+[endpoint_filter]
+[endpoint_policy]
+[eventlet_server]
+[federation]
+[fernet_receipts]
+[fernet_tokens]
+[healthcheck]
+[identity]
+[identity_mapping]
+[jwt_tokens]
+[ldap]
+[memcache]
+[oauth1]
+[oslo_messaging_amqp]
+[oslo_messaging_kafka]
+[oslo_messaging_notifications]
+[oslo_messaging_rabbit]
+[oslo_middleware]
+[oslo_policy]
+[policy]
+[profiler]
+[receipt]
+[resource]
+[revoke]
+[role]
+[saml]
+[security_compliance]
+[shadow_users]
 [token]
 provider = fernet
-[fernet_tokens]
-key_repository = /etc/keystone/fernet-keys/
-[credential]
-key_repository = /etc/keystone/credential-keys/
-[auth]
-methods = password,token
-password = password
-token = token
-[endpoint_filter]
-driver = sql
-[identity]
-driver = sql
-[resource]
-driver = sql
-[assignment]
-driver = sql
-[role]
-driver = sql
-[policy]
-driver = sql
-[application_credential]
-driver = sql
+[tokenless_auth]
+[totp]
+[trust]
+[unified_limit]
 [wsgi]
-application = keystone.server.wsgi_app:init_application
-# 显式禁用LDAP配置以防止驱动加载错误
-[ldap]
-[identity_mapping]
-[cache]
-EOF
+eof
 
     # 验证配置文件格式完整性
     if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@$HOST_IP/keystone" /etc/keystone/keystone.conf; then
