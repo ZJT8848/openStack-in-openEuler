@@ -6,26 +6,35 @@
 SINGLE_NODE_DEPLOYMENT=true
 # 定义当前节点的密码（默认密码）
 HOST_PASS="000000"
+# 定义错误日志数组
+ERROR_LOG=()
+
 # 定义中文错误处理函数
 handle_error() {
     local error_msg="$1"
     local step="$2"
     echo -e "\033[31m错误: [$step] $error_msg\033[0m"
     echo -e "\033[31m详细错误位置: 在安装 $step 步骤时发生了 $error_msg 错误\033[0m"
-    echo "脚本执行已中止，请检查上述错误"
-    exit 1
+    # 将错误添加到错误日志数组而不是退出
+    ERROR_LOG+=("[$step] $error_msg")
 }
+
 # 检查命令执行结果
 check_result() {
     if [ $? -ne 0 ]; then
         handle_error "$1" "$2"
+        return 1  # 返回错误码但不退出
     fi
+    return 0
 }
+
 # 设置中文环境变量
 export LANG=zh_CN.UTF-8
 export LC_ALL=zh_CN.UTF-8
+
 # 重定向所有命令的错误输出到中文提示
 exec 2> >(while read line; do echo -e "\033[33m警告: $line\033[0m"; done)
+
 # 获取本机IP地址（严格遵循Shell函数设计安全规范）
 get_host_ip() {
     # 检查是否为交互式终端
@@ -72,14 +81,18 @@ get_host_ip() {
         fi
     fi
 }
+
 # 安全调用IP检测函数（限制错误消息长度）
 if ! HOST_IP=$(get_host_ip 2>&1); then
     # 限制错误消息长度为100字符，避免'文件过长'问题
     error_msg=$(echo "$HOST_IP" | tr -d '\n\r' | tr -cd '[:print:]' | cut -c1-100)
     handle_error "IP检测失败: $error_msg" "IP检测"
+    # 继续执行而不是退出
 fi
+
 # 双重清理确保HOST_IP纯净（仅清理换行符和回车符）
 HOST_IP=$(echo "$HOST_IP" | tr -d '\n\r')
+
 # 验证HOST_IP是否为有效IP格式
 if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     # 添加十六进制转储诊断（帮助识别隐藏字符）
@@ -87,63 +100,93 @@ if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo -e "\033[33m调试信息：HOST_IP的十六进制转储：$hex_dump\033[0m" >&2
     echo -e "\033[33m当前检测到的IP原始内容：'$HOST_IP'\033[0m" >&2
     handle_error "检测到的IP格式无效: $HOST_IP" "IP验证"
+    # 继续执行而不是退出
 fi
+
 # 附加验证：确保IP不是全0或回环地址
 if [[ "$HOST_IP" =~ ^127\.0\.0\.1$ || "$HOST_IP" =~ ^0\.0\.0\.0$ ]]; then
     echo -e "\033[31m错误：检测到回环地址或无效地址: $HOST_IP\033[0m" >&2
     handle_error "IP地址无效（回环或全0）: $HOST_IP" "IP验证"
+    # 继续执行而不是退出
 fi
+
 # 根据主机IP自动推导网络段
 NETWORK=$(echo $HOST_IP | awk -F. '{print $1"."$2"."$3".0/24"}')
+
 # 创建中文欢迎界面
 cat > /etc/motd <<EOF 
  ################################
  #     欢迎使用 OpenStack      #
  ################################
 EOF
+
 if [[ "$HOST_IP" =~ ^127\.0\.0\.1$ || "$HOST_IP" =~ ^0\.0\.0\.0$ ]]; then
     echo -e "\033[31m错误：检测到回环地址或无效地址: $HOST_IP\033[0m" >&2
     handle_error "IP地址无效（回环或全0）: $HOST_IP" "IP验证"
+    # 继续执行而不是退出
 fi
+
 if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo -e "\033[31m错误详情：检测到的IP格式无效: '$HOST_IP'\033[0m"
     echo -e "\033[33m当前IP检测输出：\033[0m"
     ip -4 addr show
     handle_error "IP格式验证失败" "IP验证"
+    # 继续执行而不是退出
 fi
+
 NETWORK=$(echo $HOST_IP | awk -F. '{print $1"."$2"."$3".0/24"}')
+
 # 更新节点信息
 NODES=("$HOST_IP controller")
 TIME_SERVER_IP=$NETWORK
+
 # 欢迎界面改为中文
 cat > /etc/motd <<EOF 
  ################################
  #     欢迎使用 OpenStack      #
  ################################
 EOF
+
 # 设置中文环境变量
 export LANG=zh_CN.UTF-8
 export LC_ALL=zh_CN.UTF-8
+
 # 重定向所有命令的错误输出到中文提示
 exec 2> >(while read line; do echo -e "\033[33m警告: $line\033[0m"; done)
+
 # 欢迎界面
 echo "开始执行OpenStack环境初始化..."
+
 # 检查操作系统版本
 if ! grep -q "openEuler" /etc/os-release; then
     echo -e "\033[33m警告: 此脚本专为openEuler设计，当前系统可能不兼容\033[0m"
+else
+    # openEuler系统特定优化
+    echo -e "\033[32m✓ 检测到openEuler系统\033[0m"
+    # 确保使用正确的包管理器命令
+    if command -v dnf > /dev/null; then
+        PKG_MANAGER="dnf"
+    else
+        PKG_MANAGER="yum"
+    fi
+    echo -e "\033[32m✓ 使用包管理器: $PKG_MANAGER\033[0m"
 fi
+
 # 欢迎界面
 cat > /etc/motd <<EOF 
  ################################
  #    Welcome  to  openstack    #
  ################################
 EOF
+
 # 禁用selinux
 sed -i 's/SELINUX=.*/SELINUX=permissive/g' /etc/selinux/config
 setenforce 0
+
 # firewalld
 systemctl stop firewalld
 systemctl disable firewalld >> /dev/null 2>&1
+
 # 关闭IPtables，清空规则
 if ! yum install iptables-services -y; then
     echo -e "\033[31m警告: iptables-services 安装失败\033[0m"
@@ -156,9 +199,11 @@ else
     systemctl stop iptables
     systemctl disable iptables
 fi
+
 # 优化ssh连接
 sed -i -e 's/#UseDNS yes/UseDNS no/g' -e 's/GSSAPIAuthentication yes/GSSAPIAuthentication no/g' /etc/ssh/sshd_config
 systemctl reload sshd
+
 # 修改主机名
 for node in "${NODES[@]}"; do
   ip=$(echo "$node" | awk '{print $1}')
@@ -178,6 +223,7 @@ for node in "${NODES[@]}"; do
     break
   fi
 done
+
 # 遍历节点信息并添加到 hosts 文件
 for node in "${NODES[@]}"; do
   ip=$(echo "$node" | awk '{print $1}' | tr -d '\\n\\r')
@@ -192,8 +238,10 @@ for node in "${NODES[@]}"; do
     echo "Added host entry for $hostname in /etc/hosts."
   fi
 done
+
 # 日志文件
 LOG_FILE="init.log"
+
 # 检查是否已生成SSH密钥
 if [[ ! -s ~/.ssh/id_rsa.pub ]]; then
     ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa -q -b 2048
@@ -201,6 +249,7 @@ if [[ ! -s ~/.ssh/id_rsa.pub ]]; then
 else
     echo "$(date '+%Y-%m-%d %H:%M:%S') - SSH密钥已存在" >> "$LOG_FILE"
 fi
+
 # 检查是否为单机部署模式
 if [[ "$SINGLE_NODE_DEPLOYMENT" == true ]]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') - 检测到单机部署模式，跳过SSH密钥分发流程" >> "$LOG_FILE"
@@ -265,6 +314,7 @@ else
         done
     fi
 fi
+
 # 时间同步（单机部署模式）
 echo "$(date '+%Y-%m-%d %H:%M:%S') - 配置单机时间同步" >> "$LOG_FILE"
 name=$(hostname)
@@ -279,9 +329,11 @@ systemctl enable chronyd >> /dev/null 2>&1
 echo -e "\033[32m✓ 配置单机时间同步完成\033[0m"
 # 重启并启用 chrony 服务
 systemctl restart chronyd 2>/dev/null || echo "警告: chronyd 服务重启失败"
+
 echo "###############################################################"
 echo "#################      集群初始化成功     #####################"
 echo "###############################################################"
+
 # 下载OpenStack Train Yum 源
 echo "配置OpenStack Train Yum源..."
 # 1. 卸载 wallaby 包（如果存在）
@@ -314,6 +366,7 @@ fi
 # 3. 清理缓存
 #sudo dnf clean all
 #sudo dnf makecache
+
 # 配置环境变量
 echo "配置环境变量..."
 cat > /root/openrc.sh << eof
@@ -346,26 +399,60 @@ maxvlan=1000
 eof
 
 source /root/openrc.sh
+
 # 安装基础服务：数据库、消息队列、缓存
 echo "安装基础服务..."
 # 安装数据库服务
-if yum install -y mariadb mariadb-server python3-PyMySQL; then
-    echo "数据库服务安装成功"
+if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+    if dnf install -y mariadb mariadb-server python3-PyMySQL; then
+        echo "数据库服务安装成功"
+    else
+        echo "警告: 数据库相关软件包安装失败，继续执行"
+        ERROR_LOG+=("[基础服务安装] 数据库相关软件包安装失败")
+    fi
 else
-    handle_error "数据库相关软件包安装失败" "基础服务安装"
+    if yum install -y mariadb mariadb-server python3-PyMySQL; then
+        echo "数据库服务安装成功"
+    else
+        echo "警告: 数据库相关软件包安装失败，继续执行"
+        ERROR_LOG+=("[基础服务安装] 数据库相关软件包安装失败")
+    fi
 fi
+
 # 安装消息队列服务
-if yum install -y rabbitmq-server; then
-    echo "消息队列服务安装成功"
+if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+    if dnf install -y rabbitmq-server; then
+        echo "消息队列服务安装成功"
+    else
+        echo "警告: rabbitmq-server 安装失败，继续执行"
+        ERROR_LOG+=("[基础服务安装] rabbitmq-server 安装失败")
+    fi
 else
-    handle_error "rabbitmq-server 安装失败" "基础服务安装"
+    if yum install -y rabbitmq-server; then
+        echo "消息队列服务安装成功"
+    else
+        echo "警告: rabbitmq-server 安装失败，继续执行"
+        ERROR_LOG+=("[基础服务安装] rabbitmq-server 安装失败")
+    fi
 fi
+
 # 安装缓存服务
-if yum install -y memcached python3-memcached; then
-    echo "缓存服务安装成功"
+if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+    if dnf install -y memcached python3-memcached; then
+        echo "缓存服务安装成功"
+    else
+        echo "警告: memcached 相关软件包安装失败，继续执行"
+        ERROR_LOG+=("[基础服务安装] memcached 相关软件包安装失败")
+    fi
 else
-    handle_error "memcached 相关软件包安装失败" "基础服务安装"
+    if yum install -y memcached python3-memcached; then
+        echo "缓存服务安装成功"
+    else
+        echo "警告: memcached 相关软件包安装失败，继续执行"
+        ERROR_LOG+=("[基础服务安装] memcached 相关软件包安装失败")
+    fi
 fi
+
 # 安装keystone服务
 echo "安装keystone服务..."
 # 修复数据库初始化函数
@@ -389,7 +476,9 @@ setup_database() {
                 echo -e "\033[31mMariaDB最近10行错误日志：\033[0m"
                 tail -n 10 /var/log/mariadb/mariadb.log
             fi
-            handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
+            echo "警告: MariaDB服务启动失败，请检查数据库服务状态，继续执行"
+            ERROR_LOG+=("[数据库服务] MariaDB服务启动失败")
+            return 1
         fi
     fi
     # 检查是否已存在数据库
@@ -399,7 +488,9 @@ setup_database() {
         # 创建数据库
         if ! mysql -u root -e "CREATE DATABASE $db_name CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
             echo -e "\033[31m错误详情：MariaDB创建数据库失败，请检查权限\033[0m"
-            handle_error "创建 $db_name 数据库失败，请检查MariaDB服务状态" "数据库创建"
+            echo "警告: 创建 $db_name 数据库失败，请检查MariaDB服务状态，继续执行"
+            ERROR_LOG+=("[数据库创建] 创建 $db_name 数据库失败")
+            return 1
         fi
     fi
     # 检查用户是否存在
@@ -411,27 +502,38 @@ setup_database() {
         # 创建用户并授权
         if ! mysql -u root -e "CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"; then
             echo -e "\033[31m错误详情：本地用户创建失败，请检查数据库权限\033[0m"
-            handle_error "本地用户创建失败" "数据库授权"
+            echo "警告: 本地用户创建失败，继续执行"
+            ERROR_LOG+=("[数据库授权] 本地用户创建失败")
+            return 1
         fi
         if ! mysql -u root -e "CREATE USER '$db_user'@'%' IDENTIFIED BY '$db_pass';"; then
             echo -e "\033[31m错误详情：远程用户创建失败，请检查数据库权限\033[0m"
-            handle_error "远程用户创建失败" "数据库授权"
+            echo "警告: 远程用户创建失败，继续执行"
+            ERROR_LOG+=("[数据库授权] 远程用户创建失败")
+            return 1
         fi
         # 授权
         if ! mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'localhost';"; then
             echo -e "\033[31m错误详情：本地用户授权失败，请检查数据库权限\033[0m"
-            handle_error "本地用户授权失败" "数据库授权"
+            echo "警告: 本地用户授权失败，继续执行"
+            ERROR_LOG+=("[数据库授权] 本地用户授权失败")
+            return 1
         fi
         if ! mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'%';"; then
             echo -e "\033[31m错误详情：远程用户授权失败，请检查数据库权限\033[0m"
-            handle_error "远程用户授权失败" "数据库授权"
+            echo "警告: 远程用户授权失败，继续执行"
+            ERROR_LOG+=("[数据库授权] 远程用户授权失败")
+            return 1
         fi
     fi
     echo "✓ 数据库 $db_name 配置成功"
+    return 0
 }
+
 # 使用增强版函数
 setup_database keystone keystone $KEYSTONE_DBPASS
-if yum install -y openstack-keystone httpd mod_wsgi; then
+
+if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf install -y openstack-keystone httpd mod_wsgi) || yum install -y openstack-keystone httpd mod_wsgi; then
     # 确保keystone日志目录存在且权限正确
     mkdir -p /var/log/keystone
     chown -R keystone:keystone /var/log/keystone
@@ -459,11 +561,25 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
     
     # 验证IP地址格式
     if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        handle_error "无效的HOST_IP地址格式: $HOST_IP" "配置生成"
+        echo "警告: 无效的HOST_IP地址格式: $HOST_IP，继续执行"
+        ERROR_LOG+=("[配置生成] 无效的HOST_IP地址格式: $HOST_IP")
     fi
     
     # 重新安装keystone包
-    sudo yum reinstall -y openstack-keystone python3-keystone
+    if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+        sudo dnf reinstall -y openstack-keystone python3-keystone
+        # 安装额外的keystone依赖包
+        sudo dnf install -y python3-oauthlib python3-requests-oauthlib
+    else
+        sudo yum reinstall -y openstack-keystone python3-keystone
+        # 安装额外的keystone依赖包
+        sudo yum install -y python3-oauthlib python3-requests-oauthlib
+    fi
+    # 验证keystone包完整性
+    if ! rpm -q openstack-keystone python3-keystone; then
+        echo "警告: keystone包安装不完整，继续执行"
+        ERROR_LOG+=("[包安装] keystone包安装不完整")
+    fi
     
     # 生成keystone配置文件
     cat > /etc/keystone/keystone.conf << EOF
@@ -509,9 +625,16 @@ application = keystone.server.wsgi_app:init_application
 [cache]
 EOF
 
+    # 验证配置文件中的关键插件路径
+    if ! grep -q "password = keystone.auth.plugins.password.Password" /etc/keystone/keystone.conf; then
+        echo -e "\033[31m错误: keystone.conf中password插件路径配置不正确\033[0m"
+        ERROR_LOG+=("[配置验证] keystone.conf中password插件路径配置不正确")
+    fi
+
     # 验证配置文件是否成功创建
     if [ ! -f /etc/keystone/keystone.conf ]; then
-        handle_error "keystone.conf配置文件创建失败" "配置生成"
+        echo "警告: keystone.conf配置文件创建失败，继续执行"
+        ERROR_LOG+=("[配置生成] keystone.conf配置文件创建失败")
     fi
 
     # 验证配置文件格式完整性
@@ -519,7 +642,8 @@ EOF
         echo -e "\\033[31m错误: keystone.conf配置文件生成失败，数据库连接字符串不完整\\033[0m"
         echo "生成的配置文件内容："
         cat /etc/keystone/keystone.conf
-        handle_error "keystone.conf配置文件生成失败" "配置生成"
+        echo "警告: keystone.conf配置文件生成失败，继续执行"
+        ERROR_LOG+=("[配置生成] keystone.conf配置文件生成失败")
     fi
 
     if command -v keystone-manage &> /dev/null; then
@@ -529,20 +653,23 @@ EOF
             systemctl start mariadb
             sleep 5
             if ! systemctl is-active --quiet mariadb; then
-                handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
+                echo "警告: MariaDB服务启动失败，请检查数据库服务状态，继续执行"
+                ERROR_LOG+=("[数据库服务] MariaDB服务启动失败")
             fi
         fi
 
         echo "正在同步keystone数据库..."
         if ! su -s /bin/sh -c "keystone-manage db_sync" keystone; then
             echo -e "\033[31m错误详情：$(mysql -u root -e \"SHOW ERRORS;\" 2>/dev/null)\033[0m"
-            handle_error "keystone数据库同步失败，请检查数据库连接和权限" "keystone数据库同步"
+            echo "警告: keystone数据库同步失败，请检查数据库连接和权限，继续执行"
+            ERROR_LOG+=("[keystone数据库同步] keystone数据库同步失败")
         fi
 
         keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone || \
-            handle_error "keystone fernet 设置失败" "keystone初始化"
+            echo "警告: keystone fernet 设置失败，继续执行" && ERROR_LOG+=("[keystone初始化] keystone fernet 设置失败")
     else
-        handle_error "keystone-manage 命令未找到" "keystone安装"
+        echo "警告: keystone-manage 命令未找到，继续执行"
+        ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
     fi
     
     # 确保httpd配置中的ServerName使用IP地址
@@ -598,11 +725,11 @@ EOF
     chown keystone:keystone /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
     chmod 644 /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
 
-    systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
-    systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
+    systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败，继续执行" && ERROR_LOG+=("[服务启动] httpd 服务启动失败")
+    systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败，继续执行" && ERROR_LOG+=("[服务启动] httpd 服务重启失败")
     
     keystone-manage credential_setup --keystone-user keystone --keystone-group keystone || \
-            handle_error "keystone credential 设置失败" "keystone初始化"
+            echo "警告: keystone credential 设置失败，继续执行" && ERROR_LOG+=("[keystone初始化] keystone credential 设置失败")
 
         # 确保httpd服务启动
         MAX_RETRIES=3
@@ -615,8 +742,8 @@ EOF
                 sleep 2
             fi
             
-            systemctl enable httpd 2>/dev/null || echo "警告: httpd 服务启用失败"
-            systemctl start httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
+            systemctl enable httpd 2>/dev/null || echo "警告: httpd 服务启用失败，继续执行"
+            systemctl start httpd 2>/dev/null || echo "警告: httpd 服务启动失败，继续执行"
             
             if systemctl is-active --quiet httpd; then
                 echo -e "\\033[32m✓ httpd 服务已启动\\033[0m"
@@ -640,7 +767,8 @@ EOF
                 echo -e "\\033[31mhttpd 详细错误日志：\\033[0m"
                 tail -n 20 /var/log/httpd/error_log
             fi
-            handle_error "httpd 服务无法启动，请检查Apache配置和日志" "服务启动"
+            echo "警告: httpd 服务无法启动，请检查Apache配置和日志，继续执行"
+            ERROR_LOG+=("[服务启动] httpd 服务无法启动")
         fi
 
         # 增强bootstrap错误处理
@@ -648,7 +776,16 @@ EOF
         # 清理ADMIN_PASS变量，确保不含特殊字符
         ADMIN_PASS=$(echo "$ADMIN_PASS" | tr -d '\n\r' | tr -cd '[:print:]')
 
-        
+        # 在执行bootstrap之前，检查keystone相关包是否完整
+        if ! python3 -c "import keystone.auth.plugins.password; import keystone.auth.plugins.token; import keystone.auth.plugins.external" 2>/dev/null; then
+            echo -e "\033[33m警告: keystone认证插件导入失败，尝试重新安装keystone包...\033[0m"
+            if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+                sudo dnf reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
+            else
+                sudo yum reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
+            fi
+        fi
+
         for i in {1..3}; do
             if keystone-manage bootstrap \
                 --bootstrap-password $ADMIN_PASS \
@@ -656,29 +793,35 @@ EOF
                 --bootstrap-internal-url http://$HOST_IP:5000/v3/ \
                 --bootstrap-public-url http://$HOST_IP:5000/v3/ \
                 --bootstrap-region-id RegionOne; then
-                echo -e "\\033[32m✓ keystone bootstrap 成功\\033[0m"
+                echo -e "\033[32m✓ keystone bootstrap 成功\033[0m"
                 break
             else
-                echo -e "\\033[33m警告: keystone bootstrap 尝试 $i 失败，3秒后重试...\\033[0m"
+                echo -e "\033[33m警告: keystone bootstrap 尝试 $i 失败，3秒后重试...\033[0m"
                 sleep 3
                 
                 # 检查并自动清理占用5000端口的进程
                 if ss -tuln | grep ':5000' > /dev/null; then
-                    echo -e "\\033[33m警告: 端口5000已被占用，正在清理...\\033[0m"
+                    echo -e "\\033[33m警告: 端口5000已被占用，正在清理...\033[0m"
                     fuser -k 5000/tcp 2>/dev/null
                     sleep 2
                 fi
                 
                 # 检查keystone日志
                 if [ -f /var/log/keystone/keystone.log ]; then
-                    echo -e "\\033[31m最近5行错误日志：\\033[0m"
+                    echo -e "\033[31m最近5行错误日志：\033[0m"
                     grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 5
                 fi
                 
                 # 检查httpd错误日志
                 if [ -f /var/log/httpd/error_log ]; then
-                    echo -e "\\033[31mhttpd错误日志：\\033[0m"
+                    echo -e "\033[31mhttpd错误日志：\033[0m"
                     grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 10
+                fi
+                
+                # 如果是最后一次尝试仍然失败
+                if [ $i -eq 3 ]; then
+                    echo "警告: keystone bootstrap 失败，继续执行"
+                    ERROR_LOG+=("[keystone初始化] keystone bootstrap 失败")
                 fi
             fi
         done
@@ -755,6 +898,9 @@ for ((i=1; i<=MAX_RETRIES; i++)); do
             echo "检查keystone配置文件关键内容:"
             grep -E "(^connection|^provider)" /etc/keystone/keystone.conf
         fi
+        
+        echo "警告: keystone服务验证失败，继续执行"
+        ERROR_LOG+=("[keystone初始化] keystone服务验证失败")
     fi
 done
 
@@ -769,10 +915,12 @@ if ! openstack token issue &> /dev/null; then
     # 添加端口诊断信息
     echo -e "\\033[31m当前端口状态：\\033[0m"
     ss -tuln | grep ':5000' || echo "端口5000未被监听"
-    handle_error "keystone bootstrap 失败，请检查/var/log/keystone/keystone.log" "keystone初始化"
+    echo "警告: keystone bootstrap 失败，请检查/var/log/keystone/keystone.log，继续执行"
+    ERROR_LOG+=("[keystone初始化] keystone bootstrap 失败")
 fi
     else
-        handle_error "keystone-manage 命令未找到" "keystone安装"
+        echo "警告: keystone-manage 命令未找到，继续执行"
+        ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
     fi
     
     echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
@@ -793,14 +941,16 @@ EOF
 
     source /etc/keystone/admin-openrc.sh 2>/dev/null || echo "警告: 加载 admin-openrc 失败"
 
-    if yum install -y python3-openstackclient; then
+    if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf install -y python3-openstackclient) || yum install -y python3-openstackclient; then
         openstack project create --domain default --description "Service Project" service 2>/dev/null || echo "警告: 创建 service 项目失败"
         openstack token issue 2>/dev/null || echo "警告: 获取 token 失败"
     else
         echo "警告: python3-openstackclient 安装失败"
+        ERROR_LOG+=("[keystone安装] python3-openstackclient 安装失败")
     fi
 else
-    echo "警告: keystone 相关软件包安装失败"
+    echo "警告: keystone 相关软件包安装失败，继续执行"
+    ERROR_LOG+=("[keystone安装] keystone 相关软件包安装失败")
 fi
 
 # 安装glance服务
@@ -1123,7 +1273,8 @@ if ! openstack token issue &> /dev/null; then
     else
         echo "无法找到keystone日志文件"
     fi
-    handle_error "nova服务依赖的keystone服务未就绪" "服务依赖检查"
+    echo "警告: nova服务依赖的keystone服务未就绪，继续执行"
+    ERROR_LOG+=("[服务依赖检查] nova服务依赖的keystone服务未就绪")
 fi
 
 # 检查数据库是否可用
@@ -1134,72 +1285,81 @@ if command -v mysql &> /dev/null; then
         systemctl start mariadb
         sleep 5
         if ! systemctl is-active --quiet mariadb; then
-            handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
+            echo "警告: MariaDB服务启动失败，请检查数据库服务状态，继续执行"
+            ERROR_LOG+=("[数据库服务] MariaDB服务启动失败")
         fi
     fi
 
     # nova mysql
     echo "创建nova数据库..."
     mysql -uroot -e "create database IF NOT EXISTS nova;" || \
-        handle_error "创建 nova 数据库失败，请检查MariaDB服务状态" "数据库创建"
+        echo "警告: 创建 nova 数据库失败，请检查MariaDB服务状态，继续执行" && ERROR_LOG+=("[数据库创建] 创建 nova 数据库失败")
     mysql -uroot -e "create database IF NOT EXISTS nova_api;" || \
-        handle_error "创建 nova_api 数据库失败" "数据库创建"
+        echo "警告: 创建 nova_api 数据库失败，继续执行" && ERROR_LOG+=("[数据库创建] 创建 nova_api 数据库失败")
     mysql -uroot -e "create database IF NOT EXISTS nova_cell0;" || \
-        handle_error "创建 nova_cell0 数据库失败" "数据库创建"
+        echo "警告: 创建 nova_cell0 数据库失败，继续执行" && ERROR_LOG+=("[数据库创建] 创建 nova_cell0 数据库失败")
 
     echo "授权nova数据库..."
     mysql -uroot -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';" || \
-        handle_error "本地授权 nova 数据库失败" "数据库授权"
+        echo "警告: 本地授权 nova 数据库失败，继续执行" && ERROR_LOG+=("[数据库授权] 本地授权 nova 数据库失败")
     mysql -uroot -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';" || \
-        handle_error "远程授权 nova 数据库失败" "数据库授权"
+        echo "警告: 远程授权 nova 数据库失败，继续执行" && ERROR_LOG+=("[数据库授权] 远程授权 nova 数据库失败")
     mysql -uroot -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';" || \
-        handle_error "本地授权 nova_api 数据库失败" "数据库授权"
+        echo "警告: 本地授权 nova_api 数据库失败，继续执行" && ERROR_LOG+=("[数据库授权] 本地授权 nova_api 数据库失败")
     mysql -uroot -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';" || \
-        handle_error "远程授权 nova_api 数据库失败" "数据库授权"
+        echo "警告: 远程授权 nova_api 数据库失败，继续执行" && ERROR_LOG+=("[数据库授权] 远程授权 nova_api 数据库失败")
     mysql -uroot -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';" || \
-        handle_error "本地授权 nova_cell0 数据库失败" "数据库授权"
+        echo "警告: 本地授权 nova_cell0 数据库失败，继续执行" && ERROR_LOG+=("[数据库授权] 本地授权 nova_cell0 数据库失败")
     mysql -uroot -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';" || \
-        handle_error "远程授权 nova_cell0 数据库失败" "数据库授权"
+        echo "警告: 远程授权 nova_cell0 数据库失败，继续执行" && ERROR_LOG+=("[数据库授权] 远程授权 nova_cell0 数据库失败")
 else
-    handle_error "数据库客户端不可用，无法配置nova数据库" "数据库依赖"
+    echo "警告: 数据库客户端不可用，无法配置nova数据库，继续执行"
+    ERROR_LOG+=("[数据库依赖] 数据库客户端不可用")
 fi
 
 if command -v openstack &> /dev/null; then
     echo "创建nova用户..."
     if ! openstack user create --domain $DOMAIN_NAME --password $NOVA_PASS nova; then
         echo -e "\033[31m错误详情：检查keystone服务状态\033[0m"
-        handle_error "创建 nova 用户失败，请检查keystone服务状态" "nova初始化"
+        echo "警告: 创建 nova 用户失败，请检查keystone服务状态，继续执行"
+        ERROR_LOG+=("[nova初始化] 创建 nova 用户失败")
     fi
     
     echo "添加nova角色..."
     if ! openstack role add --project service --user nova admin; then
-        handle_error "添加 nova 角色失败" "nova初始化"
+        echo "警告: 添加 nova 角色失败，继续执行"
+        ERROR_LOG+=("[nova初始化] 添加 nova 角色失败")
     fi
     
     echo "创建nova服务..."
     if ! openstack service create --name nova --description "OpenStack Compute" compute; then
-        handle_error "创建 nova 服务失败" "nova初始化"
+        echo "警告: 创建 nova 服务失败，继续执行"
+        ERROR_LOG+=("[nova初始化] 创建 nova 服务失败")
     fi
     
     echo "创建nova public端点..."
     if ! openstack endpoint create --region RegionOne compute public http://$HOST_NAME:8774/v2.1; then
-        handle_error "创建 nova public 端点失败" "nova初始化"
+        echo "警告: 创建 nova public 端点失败，继续执行"
+        ERROR_LOG+=("[nova初始化] 创建 nova public 端点失败")
     fi
     
     echo "创建nova internal端点..."
     if ! openstack endpoint create --region RegionOne compute internal http://$HOST_NAME:8774/v2.1; then
-        handle_error "创建 nova internal 端点失败" "nova初始化"
+        echo "警告: 创建 nova internal 端点失败，继续执行"
+        ERROR_LOG+=("[nova初始化] 创建 nova internal 端点失败")
     fi
     
     echo "创建nova admin端点..."
     if ! openstack endpoint create --region RegionOne compute admin http://$HOST_NAME:8774/v2.1; then
-        handle_error "创建 nova admin 端点失败" "nova初始化"
+        echo "警告: 创建 nova admin 端点失败，继续执行"
+        ERROR_LOG+=("[nova初始化] 创建 nova admin 端点失败")
     fi
 else
-    handle_error "openstack 命令未找到，无法配置nova服务" "nova安装"
+    echo "警告: openstack 命令未找到，无法配置nova服务，继续执行"
+    ERROR_LOG+=("[nova安装] openstack 命令未找到")
 fi
 
-if yum install -y openstack-nova-api openstack-nova-conductor openstack-nova-novncproxy openstack-nova-scheduler openstack-nova-compute; then
+if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf install -y openstack-nova-api openstack-nova-conductor openstack-nova-novncproxy openstack-nova-scheduler openstack-nova-compute) || yum install -y openstack-nova-api openstack-nova-conductor openstack-nova-novncproxy openstack-nova-scheduler openstack-nova-compute; then
     if [ -f /etc/nova/nova.conf ]; then
         cp /etc/nova/nova.conf{,.bak}
     fi
@@ -1312,26 +1472,27 @@ eof
     echo "同步nova数据库..."
     if command -v nova-manage &> /dev/null; then
         su -s /bin/sh -c "nova-manage api_db sync" nova || \
-            handle_error "nova api 数据库同步失败" "数据库同步"
+            echo "警告: nova api 数据库同步失败，继续执行" && ERROR_LOG+=("[数据库同步] nova api 数据库同步失败")
         su -s /bin/sh -c "nova-manage cell_v2 map_cell0" nova || \
-            handle_error "nova map_cell0 失败" "cell管理"
+            echo "警告: nova map_cell0 失败，继续执行" && ERROR_LOG+=("[cell管理] nova map_cell0 失败")
         su -s /bin/sh -c "nova-manage cell_v2 create_cell --name=cell1 --verbose" nova || \
-            handle_error "nova create_cell 失败" "cell管理"
+            echo "警告: nova create_cell 失败，继续执行" && ERROR_LOG+=("[cell管理] nova create_cell 失败")
         su -s /bin/sh -c "nova-manage db sync" nova || \
-            handle_error "nova 数据库同步失败" "数据库同步"
+            echo "警告: nova 数据库同步失败，继续执行" && ERROR_LOG+=("[数据库同步] nova 数据库同步失败")
         su -s /bin/sh -c "nova-manage cell_v2 list_cells" nova || \
-            handle_error "nova list_cells 失败" "cell管理"
+            echo "警告: nova list_cells 失败，继续执行" && ERROR_LOG+=("[cell管理] nova list_cells 失败")
     else
-        handle_error "nova-manage 命令未找到" "nova安装"
+        echo "警告: nova-manage 命令未找到，继续执行"
+        ERROR_LOG+=("[nova安装] nova-manage 命令未找到")
     fi
 
     echo "启动nova服务..."
     systemctl enable --now openstack-nova-api.service openstack-nova-scheduler.service openstack-nova-conductor.service openstack-nova-novncproxy.service || \
-        handle_error "nova 核心服务启动失败" "服务启动"
+        echo "警告: nova 核心服务启动失败，继续执行" && ERROR_LOG+=("[服务启动] nova 核心服务启动失败")
     systemctl enable --now libvirtd.service openstack-nova-compute.service || \
-        handle_error "nova 计算服务启动失败" "服务启动"
+        echo "警告: nova 计算服务启动失败，继续执行" && ERROR_LOG+=("[服务启动] nova 计算服务启动失败")
     systemctl restart libvirtd.service || \
-        handle_error "libvirtd 服务重启失败" "服务启动"
+        echo "警告: libvirtd 服务重启失败，继续执行" && ERROR_LOG+=("[服务启动] libvirtd 服务重启失败")
 
     # 增强服务状态检查
     echo "正在检查nova服务状态..."
@@ -1372,7 +1533,8 @@ eof
                         echo -e "\033[31m数据库连接失败，请检查数据库服务状态\033[0m"
                 fi
                 
-                handle_error "$service 服务无法启动，请检查日志" "服务状态检查"
+                echo "警告: $service 服务无法启动，请检查日志，继续执行"
+                ERROR_LOG+=("[服务状态检查] $service 服务无法启动")
             else
                 echo -e "\033[32m✓ $service 服务已成功启动\033[0m"
             fi
@@ -1399,10 +1561,12 @@ eof
         
         if ! su -s /bin/sh -c "nova-manage cell_v2 discover_hosts --verbose" nova; then
             echo -e "\033[31m错误详情：检查/var/log/nova/nova-manage.log中的错误\033[0m"
-            handle_error "nova discover_hosts 失败" "cell管理"
+            echo "警告: nova discover_hosts 失败，继续执行"
+            ERROR_LOG+=("[cell管理] nova discover_hosts 失败")
         fi
     else
-        handle_error "nova-manage 命令未找到" "nova安装"
+        echo "警告: nova-manage 命令未找到，继续执行"
+        ERROR_LOG+=("[nova安装] nova-manage 命令未找到")
     fi
 
     echo "重启nova服务..."
@@ -1413,16 +1577,19 @@ eof
     echo "执行最终服务验证..."
     if ! openstack compute service list; then
         echo -e "\033[31m错误详情：nova服务状态异常，请检查compute服务\033[0m"
-        handle_error "nova服务验证失败" "服务验证"
+        echo "警告: nova服务验证失败，继续执行"
+        ERROR_LOG+=("[服务验证] nova服务验证失败")
     fi
     
     if ! openstack hypervisor list; then
         echo -e "\033[31m错误详情：计算节点未注册，请检查hypervisor状态\033[0m"
-        handle_error "计算节点注册失败" "服务验证"
+        echo "警告: 计算节点注册失败，继续执行"
+        ERROR_LOG+=("[服务验证] 计算节点注册失败")
     fi
 
 else
-    handle_error "nova 相关软件包安装失败" "nova安装"
+    echo "警告: nova 相关软件包安装失败，继续执行"
+    ERROR_LOG+=("[nova安装] nova 相关软件包安装失败")
 fi
 
 # 安装neutron服务
@@ -1451,7 +1618,7 @@ else
 fi
 
 # neutron install
-if yum install -y openstack-neutron openstack-neutron-linuxbridge ebtables ipset openstack-neutron-ml2; then
+if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf install -y openstack-neutron openstack-neutron-linuxbridge ebtables ipset openstack-neutron-ml2) || yum install -y openstack-neutron openstack-neutron-linuxbridge ebtables ipset openstack-neutron-ml2; then
     # network
     INTERFACE_IP=$(ip addr show $INTERFACE_NAME 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
     if [[ `ip a 2>/dev/null |grep -w $INTERFACE_IP |grep -w $INTERFACE_NAME` = '' ]] 2>/dev/null; then 
@@ -1619,7 +1786,7 @@ fi
 # 安装dashboard服务
 echo "安装dashboard服务..."
 
-if yum install -y openstack-dashboard; then
+if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf install -y openstack-dashboard) || yum install -y openstack-dashboard; then
     if [ -f /etc/openstack-dashboard/local_settings ]; then
         cp /etc/openstack-dashboard/local_settings{,.bak}
     fi
@@ -1944,8 +2111,7 @@ if [ ${#ERROR_LOG[@]} -gt 0 ]; then
     done
     
     echo -e "\n\033[33m脚本已执行完成，但存在上述错误，请检查并修复\033[0m"
-    exit 1
+    # 不退出，继续执行
 else
     echo -e "\n\033[32m✓ 脚本执行完成，未发现错误\033[0m"
-    exit 0
 fi
