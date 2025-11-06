@@ -20,6 +20,7 @@ handle_error() {
     local error_msg="$1"
     local step="$2"
     echo -e "\033[31m错误: [$step] $error_msg\033[0m"
+    echo -e "\033[31m详细错误位置: 在安装 $step 步骤时发生了 $error_msg 错误\033[0m"
     echo "脚本执行已中止，请检查上述错误"
     exit 1
 }
@@ -324,15 +325,50 @@ fi
 # 安装keystone服务
 echo "安装keystone服务..."
 
-# 检查数据库是否可用
-if command -v mysql &> /dev/null; then
-    # keystone mysql
-    mysql -uroot -p$DB_PASS -e "create database IF NOT EXISTS keystone ;" 2>/dev/null || echo "警告: 创建 keystone 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' IDENTIFIED BY '$KEYSTONE_DBPASS' ;" 2>/dev/null || echo "警告: 授权 keystone 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%' IDENTIFIED BY '$KEYSTONE_DBPASS' ;" 2>/dev/null || echo "警告: 授权 keystone 数据库失败"
-else
-    echo "警告: 数据库不可用，跳过 keystone 数据库配置"
-fi
+# 修复数据库初始化函数
+setup_database() {
+    local db_name=$1
+    local db_user=$2
+    local db_pass=$3
+
+    echo "配置数据库: $db_name"
+
+    # 检查MariaDB服务状态
+    if ! systemctl is-active --quiet mariadb; then
+        echo -e "\033[33m警告: MariaDB服务未运行，正在启动...\033[0m"
+        systemctl start mariadb
+        sleep 3
+        if ! systemctl is-active --quiet mariadb; then
+            handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
+        fi
+    fi
+
+    # 检查是否已存在数据库
+    if mysql -u root -e "SHOW DATABASES LIKE '$db_name';" 2>/dev/null | grep -q "$db_name"; then
+        echo "数据库 $db_name 已存在，跳过创建"
+    else
+        mysql -u root -e "CREATE DATABASE $db_name;" || \
+            handle_error "创建 $db_name 数据库失败，请检查MariaDB服务状态" "数据库创建"
+    fi
+
+    # 检查用户是否存在
+    if mysql -u root -e "SELECT User FROM mysql.user WHERE User='$db_user';" 2>/dev/null | grep -q "$db_user"; then
+        echo "数据库用户 $db_user 已存在，更新密码..."
+        mysql -u root -e "ALTER USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"
+        mysql -u root -e "ALTER USER '$db_user'@'%' IDENTIFIED BY '$db_pass';"
+    else
+        # 创建用户并授权
+        mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'localhost' IDENTIFIED BY '$db_pass';" || \
+            handle_error "本地用户创建失败" "数据库授权"
+        mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'%' IDENTIFIED BY '$db_pass';" || \
+            handle_error "远程用户创建失败" "数据库授权"
+    fi
+
+    echo "✓ 数据库 $db_name 配置成功"
+}
+
+# 使用增强版函数
+setup_database keystone keystone $KEYSTONE_DBPASS
 
 if yum install -y openstack-keystone httpd mod_wsgi; then
     if [ -f /etc/keystone/keystone.conf ]; then
@@ -350,7 +386,7 @@ log_dir = /var/log/keystone
 [cors]
 [credential]
 [database]
-connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_NAME/keystone
+connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_IP/keystone
 [domain_config]
 [endpoint_filter]
 [endpoint_policy]
@@ -390,16 +426,92 @@ provider = fernet
 eof
 
     if command -v keystone-manage &> /dev/null; then
-        su -s /bin/sh -c "keystone-manage db_sync" keystone 2>/dev/null || echo "警告: keystone 数据库同步失败"
-        keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone 2>/dev/null || echo "警告: keystone fernet 设置失败"
-        keystone-manage credential_setup --keystone-user keystone --keystone-group keystone 2>/dev/null || echo "警告: keystone credential 设置失败"
-        keystone-manage bootstrap --bootstrap-password $ADMIN_PASS \
-            --bootstrap-admin-url http://$HOST_NAME:5000/v3/ \
-            --bootstrap-internal-url http://$HOST_NAME:5000/v3/ \
-            --bootstrap-public-url http://$HOST_NAME:5000/v3/ \
-            --bootstrap-region-id RegionOne 2>/dev/null || echo "警告: keystone bootstrap 失败"
+        # 确保数据库服务已启动
+        if ! systemctl is-active --quiet mariadb; then
+            echo -e "\033[33m警告: MariaDB服务未运行，正在启动...\033[0m"
+            systemctl start mariadb
+            sleep 5
+            if ! systemctl is-active --quiet mariadb; then
+                handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
+            fi
+        fi
+
+        echo "正在同步keystone数据库..."
+        if ! su -s /bin/sh -c "keystone-manage db_sync" keystone; then
+            echo -e "\033[31m错误详情：$(mysql -u root -e \"SHOW ERRORS;\" 2>/dev/null)\033[0m"
+            handle_error "keystone数据库同步失败，请检查数据库连接和权限" "keystone数据库同步"
+        fi
+
+        keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone || \
+            handle_error "keystone fernet 设置失败" "keystone初始化"
+        keystone-manage credential_setup --keystone-user keystone --keystone-group keystone || \
+            handle_error "keystone credential 设置失败" "keystone初始化"
+
+        # 增强bootstrap错误处理
+        echo "正在执行keystone bootstrap..."
+        for i in {1..3}; do
+            if keystone-manage bootstrap \
+                --bootstrap-password $ADMIN_PASS \
+                --bootstrap-admin-url http://$HOST_NAME:5000/v3/ \
+                --bootstrap-internal-url http://$HOST_NAME:5000/v3/ \
+                --bootstrap-public-url http://$HOST_NAME:5000/v3/ \
+                --bootstrap-region-id RegionOne; then
+                echo -e "\033[32m✓ keystone bootstrap 成功\033[0m"
+                break
+            else
+                echo -e "\033[33m警告: keystone bootstrap 尝试 $i 失败，3秒后重试...\033[0m"
+                sleep 3
+                
+                # 检查5000端口占用情况
+                if ss -tuln | grep ':5000' > /dev/null; then
+                    echo -e "\033[31m错误: 端口5000已被占用，请检查冲突服务\033[0m"
+                fi
+                
+                # 检查keystone日志
+                if [ -f /var/log/keystone/keystone.log ]; then
+                    echo -e "\033[31m最近5行错误日志：\033[0m"
+                    grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
+                fi
+            fi
+        done
+
+        # 增强服务验证机制
+        echo "正在验证keystone服务可用性..."
+        MAX_RETRIES=5
+        WAIT_TIME=5
+        for ((i=1; i<=MAX_RETRIES; i++)); do
+            if openstack token issue &> /dev/null; then
+                echo -e "\033[32m✓ keystone服务验证成功\033[0m"
+                break
+            else
+                echo -e "\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\033[0m"
+                sleep $WAIT_TIME
+                
+                # 检查服务状态
+                if ! systemctl is-active --quiet httpd; then
+                    echo -e "\033[31m错误: httpd 服务未运行，请检查Apache状态\033[0m"
+                fi
+                
+                # 检查keystone日志
+                if [ -f /var/log/keystone/keystone.log ]; then
+                    echo -e "\033[31m最近5行错误日志：\033[0m"
+                    grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
+                fi
+            fi
+        done
+
+        # 如果最终验证失败
+        if ! openstack token issue &> /dev/null; then
+            echo -e "\033[31m详细错误日志：\033[0m"
+            if [ -f /var/log/keystone/keystone.log ]; then
+                tail -n 20 /var/log/keystone/keystone.log
+            else
+                echo "无法找到keystone日志文件"
+            fi
+            handle_error "keystone bootstrap 失败，请检查/var/log/keystone/keystone.log" "keystone初始化"
+        fi
     else
-        echo "警告: keystone-manage 命令未找到"
+        handle_error "keystone-manage 命令未找到" "keystone安装"
     fi
     
     echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
@@ -436,22 +548,81 @@ echo "安装glance服务..."
 # 检查数据库是否可用
 if command -v mysql &> /dev/null; then
     # glance mysql
-    mysql -uroot -p$DB_PASS -e "create database IF NOT EXISTS glance ;" 2>/dev/null || echo "警告: 创建 glance 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost' IDENTIFIED BY '$GLANCE_DBPASS' ;" 2>/dev/null || echo "警告: 授权 glance 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY '$GLANCE_DBPASS' ;" 2>/dev/null || echo "警告: 授权 glance 数据库失败"
+    mysql -uroot -e "create database IF NOT EXISTS glance ;" 2>/dev/null || echo "警告: 创建 glance 数据库失败"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost' IDENTIFIED BY '$GLANCE_DBPASS' ;" 2>/dev/null || echo "警告: 授权 glance 数据库失败"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY '$GLANCE_DBPASS' ;" 2>/dev/null || echo "警告: 授权 glance 数据库失败"
 else
     echo "警告: 数据库不可用，跳过 glance 数据库配置"
 fi
 
+# 增强服务验证机制
+echo "正在验证keystone服务可用性..."
+MAX_RETRIES=5
+WAIT_TIME=5
+for ((i=1; i<=MAX_RETRIES; i++)); do
+    if openstack token issue &> /dev/null; then
+        echo -e "\033[32m✓ keystone服务验证成功\033[0m"
+        break
+    else
+        echo -e "\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\033[0m"
+        sleep $WAIT_TIME
+        
+        # 检查服务状态
+        if ! systemctl is-active --quiet httpd; then
+            echo -e "\033[31m错误: httpd 服务未运行，请检查Apache状态\033[0m"
+        fi
+        
+        # 检查keystone日志
+        if [ -f /var/log/keystone/keystone.log ]; then
+            echo -e "\033[31m最近5行错误日志：\033[0m"
+            grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
+        fi
+    fi
+done
+
+if ! openstack token issue &> /dev/null; then
+    echo -e "\033[31m详细错误日志：\033[0m"
+    if [ -f /var/log/keystone/keystone.log ]; then
+        tail -n 20 /var/log/keystone/keystone.log
+    else
+        echo "无法找到keystone日志文件"
+    fi
+    handle_error "glance服务依赖的keystone服务未就绪" "服务依赖检查"
+fi
+
 if command -v openstack &> /dev/null; then
-    openstack user create --domain $DOMAIN_NAME --password $GLANCE_PASS glance 2>/dev/null || echo "警告: 创建 glance 用户失败"
-    openstack role add --project service --user glance admin 2>/dev/null || echo "警告: 添加 glance 角色失败"
-    openstack service create --name glance --description "OpenStack Image" image 2>/dev/null || echo "警告: 创建 glance 服务失败"
-    openstack endpoint create --region RegionOne image public http://$HOST_NAME:9292 2>/dev/null || echo "警告: 创建 glance public 端点失败"
-    openstack endpoint create --region RegionOne image internal http://$HOST_NAME:9292 2>/dev/null || echo "警告: 创建 glance internal 端点失败"
-    openstack endpoint create --region RegionOne image admin http://$HOST_NAME:9292 2>/dev/null || echo "警告: 创建 glance admin 端点失败"
+    echo "创建glance用户..."
+    if ! openstack user create --domain $DOMAIN_NAME --password $GLANCE_PASS glance; then
+        echo -e "\033[31m错误详情：检查keystone服务状态\033[0m"
+        handle_error "创建 glance 用户失败，请检查keystone服务状态" "glance初始化"
+    fi
+    
+    echo "添加glance角色..."
+    if ! openstack role add --project service --user glance admin; then
+        handle_error "添加 glance 角色失败" "glance初始化"
+    fi
+    
+    echo "创建glance服务..."
+    if ! openstack service create --name glance --description "OpenStack Image" image; then
+        handle_error "创建 glance 服务失败" "glance初始化"
+    fi
+    
+    echo "创建glance public端点..."
+    if ! openstack endpoint create --region RegionOne image public http://$HOST_NAME:9292; then
+        handle_error "创建 glance public 端点失败" "glance初始化"
+    fi
+    
+    echo "创建glance internal端点..."
+    if ! openstack endpoint create --region RegionOne image internal http://$HOST_NAME:9292; then
+        handle_error "创建 glance internal 端点失败" "glance初始化"
+    fi
+    
+    echo "创建glance admin端点..."
+    if ! openstack endpoint create --region RegionOne image admin http://$HOST_NAME:9292; then
+        handle_error "创建 glance admin 端点失败" "glance初始化"
+    fi
 else
-    echo "警告: openstack 命令未找到，跳过 glance 用户和端点配置"
+    handle_error "openstack 命令未找到，无法配置glance服务" "glance安装"
 fi
 
 if yum install -y openstack-glance; then
@@ -464,7 +635,7 @@ if yum install -y openstack-glance; then
 [cinder]
 [cors]
 [database]
-connection = mysql+pymysql://glance:$GLANCE_DBPASS@$HOST_NAME/glance
+connection = mysql+pymysql://glance:$GLANCE_DBPASS@$HOST_IP/glance
 [file]
 [glance.store.http.store]
 [glance.store.rbd.store]
@@ -503,15 +674,21 @@ flavor = keystone
 eof
 
     if command -v glance-manage &> /dev/null; then
-        su -s /bin/sh -c "glance-manage db_sync" glance 2>/dev/null || echo "警告: glance 数据库同步失败"
+        echo "正在同步glance数据库..."
+        if ! su -s /bin/sh -c "glance-manage db_sync" glance; then
+            echo -e "\033[31m错误详情：检查/var/log/glance/api.log中的错误\033[0m"
+            handle_error "glance数据库同步失败，请检查keystone服务状态和数据库配置" "glance初始化"
+        fi
     else
-        echo "警告: glance-manage 命令未找到"
+        handle_error "glance-manage 命令未找到" "glance安装"
     fi
     
-    systemctl enable --now openstack-glance-api.service 2>/dev/null || echo "警告: glance-api 服务启动失败"
-    systemctl restart openstack-glance-api 2>/dev/null || echo "警告: glance-api 服务重启失败"
+    systemctl enable --now openstack-glance-api.service 2>/dev/null || \
+        handle_error "glance-api 服务启动失败" "glance服务"
+    systemctl restart openstack-glance-api 2>/dev/null || \
+        handle_error "glance-api 服务重启失败" "glance服务"
 else
-    echo "警告: glance 相关软件包安装失败"
+    handle_error "glance 相关软件包安装失败" "glance安装"
 fi
 
 # 安装placement服务
@@ -520,22 +697,84 @@ echo "安装placement服务..."
 # 检查数据库是否可用
 if command -v mysql &> /dev/null; then
     # placement mysql
-    mysql -uroot -p$DB_PASS -e "CREATE DATABASE placement;" 2>/dev/null || echo "警告: 创建 placement 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'localhost' IDENTIFIED BY '$PLACEMENT_DBPASS';" 2>/dev/null || echo "警告: 授权 placement 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'%' IDENTIFIED BY '$PLACEMENT_DBPASS';" 2>/dev/null || echo "警告: 授权 placement 数据库失败"
+    mysql -uroot -e "CREATE DATABASE placement;" 2>/dev/null || \
+        echo "警告: 创建 placement 数据库失败"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'localhost' IDENTIFIED BY '$PLACEMENT_DBPASS';" 2>/dev/null || \
+        echo "警告: 授权 placement 数据库失败"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'%' IDENTIFIED BY '$PLACEMENT_DBPASS';" 2>/dev/null || \
+        echo "警告: 授权 placement 数据库失败"
 else
     echo "警告: 数据库不可用，跳过 placement 数据库配置"
 fi
 
+# 增强服务验证机制
+echo "正在验证keystone服务可用性..."
+MAX_RETRIES=5
+WAIT_TIME=5
+for ((i=1; i<=MAX_RETRIES; i++)); do
+    if openstack token issue &> /dev/null; then
+        echo -e "\033[32m✓ keystone服务验证成功\033[0m"
+        break
+    else
+        echo -e "\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\033[0m"
+        sleep $WAIT_TIME
+        
+        # 检查服务状态
+        if ! systemctl is-active --quiet httpd; then
+            echo -e "\033[31m错误: httpd 服务未运行，请检查Apache状态\033[0m"
+        fi
+        
+        # 检查keystone日志
+        if [ -f /var/log/keystone/keystone.log ]; then
+            echo -e "\033[31m最近5行错误日志：\033[0m"
+            grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
+        fi
+    fi
+done
+
+if ! openstack token issue &> /dev/null; then
+    echo -e "\033[31m详细错误日志：\033[0m"
+    if [ -f /var/log/keystone/keystone.log ]; then
+        tail -n 20 /var/log/keystone/keystone.log
+    else
+        echo "无法找到keystone日志文件"
+    fi
+    handle_error "placement服务依赖的keystone服务未就绪" "服务依赖检查"
+fi
+
 if command -v openstack &> /dev/null; then
-    openstack user create --domain $DOMAIN_NAME --password $PLACEMENT_PASS placement 2>/dev/null || echo "警告: 创建 placement 用户失败"
-    openstack role add --project service --user placement admin 2>/dev/null || echo "警告: 添加 placement 角色失败"
-    openstack service create --name placement --description "Placement API" placement 2>/dev/null || echo "警告: 创建 placement 服务失败"
-    openstack endpoint create --region RegionOne placement public http://$HOST_NAME:8778 2>/dev/null || echo "警告: 创建 placement public 端点失败"
-    openstack endpoint create --region RegionOne placement internal http://$HOST_NAME:8778 2>/dev/null || echo "警告: 创建 placement internal 端点失败"
-    openstack endpoint create --region RegionOne placement admin http://$HOST_NAME:8778 2>/dev/null || echo "警告: 创建 placement admin 端点失败"
+    echo "创建placement用户..."
+    if ! openstack user create --domain $DOMAIN_NAME --password $PLACEMENT_PASS placement; then
+        echo -e "\033[31m错误详情：检查keystone服务状态\033[0m"
+        handle_error "创建 placement 用户失败，请检查keystone服务状态" "placement初始化"
+    fi
+    
+    echo "添加placement角色..."
+    if ! openstack role add --project service --user placement admin; then
+        handle_error "添加 placement 角色失败" "placement初始化"
+    fi
+    
+    echo "创建placement服务..."
+    if ! openstack service create --name placement --description "Placement API" placement; then
+        handle_error "创建 placement 服务失败" "placement初始化"
+    fi
+    
+    echo "创建placement public端点..."
+    if ! openstack endpoint create --region RegionOne placement public http://$HOST_NAME:8778; then
+        handle_error "创建 placement public 端点失败" "placement初始化"
+    fi
+    
+    echo "创建placement internal端点..."
+    if ! openstack endpoint create --region RegionOne placement internal http://$HOST_NAME:8778; then
+        handle_error "创建 placement internal 端点失败" "placement初始化"
+    fi
+    
+    echo "创建placement admin端点..."
+    if ! openstack endpoint create --region RegionOne placement admin http://$HOST_NAME:8778; then
+        handle_error "创建 placement admin 端点失败" "placement初始化"
+    fi
 else
-    echo "警告: openstack 命令未找到，跳过 placement 用户和端点配置"
+    handle_error "openstack 命令未找到，无法配置placement服务" "placement安装"
 fi
 
 if yum install -y openstack-placement-api; then
@@ -558,7 +797,7 @@ project_name = service
 username = placement
 password = $PLACEMENT_PASS
 [placement_database]
-connection = mysql+pymysql://placement:$PLACEMENT_DBPASS@$HOST_NAME/placement
+connection = mysql+pymysql://placement:$PLACEMENT_DBPASS@$HOST_IP/placement
 eof
 
     if command -v placement-manage &> /dev/null; then
@@ -591,30 +830,112 @@ fi
 # 安装nova服务
 echo "安装nova服务..."
 
+# 增强服务依赖检查
+echo "正在验证keystone服务可用性..."
+MAX_RETRIES=5
+WAIT_TIME=5
+for ((i=1; i<=MAX_RETRIES; i++)); do
+    if openstack token issue &> /dev/null; then
+        echo -e "\033[32m✓ keystone服务验证成功\033[0m"
+        break
+    else
+        echo -e "\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\033[0m"
+        sleep $WAIT_TIME
+        
+        # 检查服务状态
+        if ! systemctl is-active --quiet httpd; then
+            echo -e "\033[31m错误: httpd 服务未运行，请检查Apache状态\033[0m"
+        fi
+        
+        # 检查keystone日志
+        if [ -f /var/log/keystone/keystone.log ]; then
+            echo -e "\033[31m最近5行错误日志：\033[0m"
+            grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
+        fi
+    fi
+done
+
+if ! openstack token issue &> /dev/null; then
+    echo -e "\033[31m详细错误日志：\033[0m"
+    if [ -f /var/log/keystone/keystone.log ]; then
+        tail -n 20 /var/log/keystone/keystone.log
+    else
+        echo "无法找到keystone日志文件"
+    fi
+    handle_error "nova服务依赖的keystone服务未就绪" "服务依赖检查"
+fi
+
 # 检查数据库是否可用
 if command -v mysql &> /dev/null; then
-    mysql -uroot -p$DB_PASS -e "create database IF NOT EXISTS nova ;" 2>/dev/null || echo "警告: 创建 nova 数据库失败"
-    mysql -uroot -p$DB_PASS -e "create database IF NOT EXISTS nova_api ;" 2>/dev/null || echo "警告: 创建 nova_api 数据库失败"
-    mysql -uroot -p$DB_PASS -e "create database IF NOT EXISTS nova_cell0 ;" 2>/dev/null || echo "警告: 创建 nova_cell0 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS' ;" 2>/dev/null || echo "警告: 授权 nova 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS' ;" 2>/dev/null || echo "警告: 授权 nova 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS' ;" 2>/dev/null || echo "警告: 授权 nova_api 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS' ;" 2>/dev/null || echo "警告: 授权 nova_api 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS' ;" 2>/dev/null || echo "警告: 授权 nova_cell0 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS' ;" 2>/dev/null || echo "警告: 授权 nova_cell0 数据库失败"
+    # 确保数据库服务已启动
+    if ! systemctl is-active --quiet mariadb; then
+        echo -e "\033[33m警告: MariaDB服务未运行，正在启动...\033[0m"
+        systemctl start mariadb
+        sleep 5
+        if ! systemctl is-active --quiet mariadb; then
+            handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
+        fi
+    fi
+
+    # nova mysql
+    echo "创建nova数据库..."
+    mysql -uroot -e "create database IF NOT EXISTS nova;" || \
+        handle_error "创建 nova 数据库失败，请检查MariaDB服务状态" "数据库创建"
+    mysql -uroot -e "create database IF NOT EXISTS nova_api;" || \
+        handle_error "创建 nova_api 数据库失败" "数据库创建"
+    mysql -uroot -e "create database IF NOT EXISTS nova_cell0;" || \
+        handle_error "创建 nova_cell0 数据库失败" "数据库创建"
+
+    echo "授权nova数据库..."
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';" || \
+        handle_error "本地授权 nova 数据库失败" "数据库授权"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';" || \
+        handle_error "远程授权 nova 数据库失败" "数据库授权"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';" || \
+        handle_error "本地授权 nova_api 数据库失败" "数据库授权"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';" || \
+        handle_error "远程授权 nova_api 数据库失败" "数据库授权"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';" || \
+        handle_error "本地授权 nova_cell0 数据库失败" "数据库授权"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';" || \
+        handle_error "远程授权 nova_cell0 数据库失败" "数据库授权"
 else
-    echo "警告: 数据库不可用，跳过 nova 数据库配置"
+    handle_error "数据库客户端不可用，无法配置nova数据库" "数据库依赖"
 fi
 
 if command -v openstack &> /dev/null; then
-    openstack user create --domain $DOMAIN_NAME --password $NOVA_PASS nova 2>/dev/null || echo "警告: 创建 nova 用户失败"
-    openstack role add --project service --user nova admin 2>/dev/null || echo "警告: 添加 nova 角色失败"
-    openstack service create --name nova --description "OpenStack Compute" compute 2>/dev/null || echo "警告: 创建 nova 服务失败"
-    openstack endpoint create --region RegionOne compute public http://$HOST_NAME:8774/v2.1 2>/dev/null || echo "警告: 创建 nova public 端点失败"
-    openstack endpoint create --region RegionOne compute internal http://$HOST_NAME:8774/v2.1 2>/dev/null || echo "警告: 创建 nova internal 端点失败"
-    openstack endpoint create --region RegionOne compute admin http://$HOST_NAME:8774/v2.1 2>/dev/null || echo "警告: 创建 nova admin 端点失败"
+    echo "创建nova用户..."
+    if ! openstack user create --domain $DOMAIN_NAME --password $NOVA_PASS nova; then
+        echo -e "\033[31m错误详情：检查keystone服务状态\033[0m"
+        handle_error "创建 nova 用户失败，请检查keystone服务状态" "nova初始化"
+    fi
+    
+    echo "添加nova角色..."
+    if ! openstack role add --project service --user nova admin; then
+        handle_error "添加 nova 角色失败" "nova初始化"
+    fi
+    
+    echo "创建nova服务..."
+    if ! openstack service create --name nova --description "OpenStack Compute" compute; then
+        handle_error "创建 nova 服务失败" "nova初始化"
+    fi
+    
+    echo "创建nova public端点..."
+    if ! openstack endpoint create --region RegionOne compute public http://$HOST_NAME:8774/v2.1; then
+        handle_error "创建 nova public 端点失败" "nova初始化"
+    fi
+    
+    echo "创建nova internal端点..."
+    if ! openstack endpoint create --region RegionOne compute internal http://$HOST_NAME:8774/v2.1; then
+        handle_error "创建 nova internal 端点失败" "nova初始化"
+    fi
+    
+    echo "创建nova admin端点..."
+    if ! openstack endpoint create --region RegionOne compute admin http://$HOST_NAME:8774/v2.1; then
+        handle_error "创建 nova admin 端点失败" "nova初始化"
+    fi
 else
-    echo "警告: openstack 命令未找到，跳过 nova 用户和端点配置"
+    handle_error "openstack 命令未找到，无法配置nova服务" "nova安装"
 fi
 
 if yum install -y openstack-nova-api openstack-nova-conductor openstack-nova-novncproxy openstack-nova-scheduler openstack-nova-compute; then
@@ -629,13 +950,13 @@ transport_url = rabbit://$RABBIT_USER:$RABBIT_PASS@$HOST_NAME
 my_ip = $HOST_IP
 use_neutron = true
 firewall_driver = nova.virt.firewall.NoopFirewallDriver
-compute_driver=libvirt.LibvirtDriver                                               
-instances_path = /var/lib/nova/instances/                                          
+compute_driver=libvirt.LibvirtDriver                                                
+instances_path = /var/lib/nova/instances/                                           
 log_dir = /var/log/nova
 [api]
 auth_strategy = keystone
 [api_database]
-connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_NAME/nova_api
+connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_IP/nova_api
 [barbican]
 [cache]
 [cinder]
@@ -645,7 +966,7 @@ connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_NAME/nova_api
 [consoleauth]
 [cors]
 [database]
-connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_NAME/nova
+connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_IP/nova
 [devices]
 [ephemeral_storage_encryption]
 [filter_scheduler]
@@ -679,7 +1000,7 @@ region_name = RegionOne
 project_name = service
 username = neutron
 password = $NEUTRON_PASS
-service_metadata_proxy = true                                                    
+service_metadata_proxy = true                                                     
 metadata_proxy_shared_secret = $METADATA_SECRET    
 [notifications]
 [osapi_v21]
@@ -727,45 +1048,120 @@ novncproxy_base_url = http://$HOST_IP:6080/vnc_auto.html
 [zvm]
 eof
 
+    echo "同步nova数据库..."
     if command -v nova-manage &> /dev/null; then
-        su -s /bin/sh -c "nova-manage api_db sync" nova 2>/dev/null || echo "警告: nova api 数据库同步失败"
-        su -s /bin/sh -c "nova-manage cell_v2 map_cell0" nova 2>/dev/null || echo "警告: nova map_cell0 失败"
-        su -s /bin/sh -c "nova-manage cell_v2 create_cell --name=cell1 --verbose" nova 2>/dev/null || echo "警告: nova create_cell 失败"
-        su -s /bin/sh -c "nova-manage db sync" nova 2>/dev/null || echo "警告: nova 数据库同步失败"
-        su -s /bin/sh -c "nova-manage cell_v2 list_cells" nova 2>/dev/null || echo "警告: nova list_cells 失败"
+        su -s /bin/sh -c "nova-manage api_db sync" nova || \
+            handle_error "nova api 数据库同步失败" "数据库同步"
+        su -s /bin/sh -c "nova-manage cell_v2 map_cell0" nova || \
+            handle_error "nova map_cell0 失败" "cell管理"
+        su -s /bin/sh -c "nova-manage cell_v2 create_cell --name=cell1 --verbose" nova || \
+            handle_error "nova create_cell 失败" "cell管理"
+        su -s /bin/sh -c "nova-manage db sync" nova || \
+            handle_error "nova 数据库同步失败" "数据库同步"
+        su -s /bin/sh -c "nova-manage cell_v2 list_cells" nova || \
+            handle_error "nova list_cells 失败" "cell管理"
     else
-        echo "警告: nova-manage 命令未找到"
+        handle_error "nova-manage 命令未找到" "nova安装"
     fi
 
-    systemctl enable --now openstack-nova-api.service openstack-nova-scheduler.service openstack-nova-conductor.service openstack-nova-novncproxy.service 2>/dev/null || echo "警告: nova 核心服务启动失败"
-    systemctl enable --now libvirtd.service openstack-nova-compute.service 2>/dev/null || echo "警告: nova 计算服务启动失败"
-    systemctl restart libvirtd.service 2>/dev/null || echo "警告: libvirtd 服务重启失败"
+    echo "启动nova服务..."
+    systemctl enable --now openstack-nova-api.service openstack-nova-scheduler.service openstack-nova-conductor.service openstack-nova-novncproxy.service || \
+        handle_error "nova 核心服务启动失败" "服务启动"
+    systemctl enable --now libvirtd.service openstack-nova-compute.service || \
+        handle_error "nova 计算服务启动失败" "服务启动"
+    systemctl restart libvirtd.service || \
+        handle_error "libvirtd 服务重启失败" "服务启动"
 
-    cat > /root/nova-service-restart.sh <<EOF 
-#!/bin/bash
-# 处理api服务
-systemctl restart openstack-nova-api 2>/dev/null || echo "警告: openstack-nova-api 重启失败"
-# 处理资源调度服务
-systemctl restart openstack-nova-scheduler 2>/dev/null || echo "警告: openstack-nova-scheduler 重启失败"
-# 处理数据库服务
-systemctl restart openstack-nova-conductor 2>/dev/null || echo "警告: openstack-nova-conductor 重启失败"
-# 处理vnc远程窗口服务
-systemctl restart openstack-nova-novncproxy 2>/dev/null || echo "警告: openstack-nova-novncproxy 重启失败"
-# 处理nova-compute服务
-systemctl restart openstack-nova-compute 2>/dev/null || echo "警告: openstack-nova-compute 重启失败"
-EOF
+    # 增强服务状态检查
+    echo "正在检查nova服务状态..."
+    REQUIRED_SERVICES=(
+        "openstack-nova-api"
+        "openstack-nova-scheduler"
+        "openstack-nova-conductor"
+        "openstack-nova-novncproxy"
+        "libvirtd"
+        "openstack-nova-compute"
+    )
 
+    for service in "${REQUIRED_SERVICES[@]}"; do
+        echo "检查 $service 服务状态..."
+        if ! systemctl is-active --quiet "$service"; then
+            echo -e "\033[31m错误: $service 服务未运行，尝试重启...\033[0m"
+            
+            # 尝试重启服务
+            systemctl restart "$service" || echo -e "\033[33m警告: 无法重启 $service 服务\033[0m"
+            
+            # 检查服务状态
+            sleep 3
+            if ! systemctl is-active --quiet "$service"; then
+                echo -e "\033[31m严重错误: $service 服务重启失败\033[0m"
+                
+                # 检查服务日志
+                if [ -f "/var/log/nova/$(basename "$service").log" ]; then
+                    echo -e "\033[31m$service 最近10行错误日志：\033[0m"
+                    grep -i 'error' "/var/log/nova/$(basename "$service").log" | tail -n 10
+                else
+                    echo -e "\033[31m无法找到 $service 日志文件\033[0m"
+                fi
+                
+                # 检查数据库连接
+                if [[ "$service" == *"nova"* ]]; then
+                    echo -e "\033[31m检查数据库连接状态...\033[0m"
+                    mysql -h $HOST_IP -u nova -p$NOVA_DBPASS -e "SHOW DATABASES;" 2>/dev/null || \
+                        echo -e "\033[31m数据库连接失败，请检查数据库服务状态\033[0m"
+                fi
+                
+                handle_error "$service 服务无法启动，请检查日志" "服务状态检查"
+            else
+                echo -e "\033[32m✓ $service 服务已成功启动\033[0m"
+            fi
+        else
+            echo -e "\033[32m✓ $service 服务运行正常\033[0m"
+        fi
+    done
+
+    echo "发现nova主机..."
     if command -v nova-manage &> /dev/null; then
-        nova-manage cell_v2 discover_hosts 2>/dev/null || echo "警告: nova discover_hosts 失败"
-        nova-manage cell_v2 map_cell_and_hosts 2>/dev/null || echo "警告: nova map_cell_and_hosts 失败"
-        su -s /bin/sh -c "nova-manage cell_v2 discover_hosts --verbose" nova 2>/dev/null || echo "警告: nova discover_hosts --verbose 失败"
+        # 添加超时和重试机制
+        MAX_RETRIES=3
+        WAIT_TIME=10
+        for ((i=1; i<=MAX_RETRIES; i++)); do
+            echo "执行 cell_v2 discover_hosts (尝试 $i/$MAX_RETRIES)..."
+            if su -s /bin/sh -c "nova-manage cell_v2 discover_hosts --verbose" nova; then
+                echo -e "\033[32m✓ nova discover_hosts 成功\033[0m"
+                break
+            else
+                echo -e "\033[33m警告: nova discover_hosts 尝试 $i/$MAX_RETRIES 失败，等待 $WAIT_TIME 秒后重试...\033[0m"
+                sleep $WAIT_TIME
+            fi
+        done
+        
+        if ! su -s /bin/sh -c "nova-manage cell_v2 discover_hosts --verbose" nova; then
+            echo -e "\033[31m错误详情：检查/var/log/nova/nova-manage.log中的错误\033[0m"
+            handle_error "nova discover_hosts 失败" "cell管理"
+        fi
     else
-        echo "警告: nova-manage 命令未找到，跳过 cell 管理"
+        handle_error "nova-manage 命令未找到" "nova安装"
+    fi
+
+    echo "重启nova服务..."
+    bash /root/nova-service-restart.sh || \
+        echo -e "\033[33m警告: nova 服务重启脚本执行失败，建议手动重启\033[0m"
+
+    # 增强最终验证
+    echo "执行最终服务验证..."
+    if ! openstack compute service list; then
+        echo -e "\033[31m错误详情：nova服务状态异常，请检查compute服务\033[0m"
+        handle_error "nova服务验证失败" "服务验证"
     fi
     
-    bash /root/nova-service-restart.sh 2>/dev/null || echo "警告: nova 服务重启脚本执行失败"
+    if ! openstack hypervisor list; then
+        echo -e "\033[31m错误详情：计算节点未注册，请检查hypervisor状态\033[0m"
+        handle_error "计算节点注册失败" "服务验证"
+    fi
+
 else
-    echo "警告: nova 相关软件包安装失败"
+    handle_error "nova 相关软件包安装失败" "nova安装"
 fi
 
 # 安装neutron服务
@@ -774,9 +1170,9 @@ echo "安装neutron服务..."
 # 检查数据库是否可用
 if command -v mysql &> /dev/null; then
     # neutron mysql
-    mysql -uroot -p$DB_PASS -e "create database IF NOT EXISTS neutron ;" 2>/dev/null || echo "警告: 创建 neutron 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'localhost' IDENTIFIED BY '$NEUTRON_DBPASS' ;" 2>/dev/null || echo "警告: 授权 neutron 数据库失败"
-    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'%' IDENTIFIED BY '$NEUTRON_DBPASS' ;" 2>/dev/null || echo "警告: 授权 neutron 数据库失败"
+    mysql -uroot -e "create database IF NOT EXISTS neutron ;" 2>/dev/null || echo "警告: 创建 neutron 数据库失败"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'localhost' IDENTIFIED BY '$NEUTRON_DBPASS' ;" 2>/dev/null || echo "警告: 授权 neutron 数据库失败"
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'%' IDENTIFIED BY '$NEUTRON_DBPASS' ;" 2>/dev/null || echo "警告: 授权 neutron 数据库失败"
 else
     echo "警告: 数据库不可用，跳过 neutron 数据库配置"
 fi
@@ -827,7 +1223,7 @@ transport_url = rabbit://$RABBIT_USER:$RABBIT_PASS@$HOST_NAME
 api_workers = 3  
 [cors]
 [database]
-connection = mysql+pymysql://neutron:$NEUTRON_DBPASS@$HOST_NAME/neutron
+connection = mysql+pymysql://neutron:$NEUTRON_DBPASS@$HOST_IP/neutron
 [keystone_authtoken]
 www_authenticate_uri = http://$HOST_NAME:5000
 auth_url = http://$HOST_NAME:5000
@@ -903,6 +1299,7 @@ eof
     
     cat >  /etc/neutron/l3_agent.ini << eof
 [DEFAULT]
+
 interface_driver = linuxbridge
 eof
 
