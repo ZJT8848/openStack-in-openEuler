@@ -455,6 +455,7 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
     if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         handle_error "无效的HOST_IP地址格式: $HOST_IP" "配置生成"
     fi
+    sudo yum reinstall openstack-keystone python3-keystone
 #    [auth]
 #methods = password,token
 #password = keystone.auth.plugins.password.Password  # 替换<PASSWORD>
@@ -476,8 +477,6 @@ key_repository = /etc/keystone/credential-keys/
 [auth]
 methods = password,token
 password = password
-methods = password,token
-
 token = token
 [endpoint_filter]
 driver = sql
@@ -634,6 +633,12 @@ EOF
         echo "正在执行keystone bootstrap..."
         # 清理ADMIN_PASS变量，确保不含特殊字符
         ADMIN_PASS=$(echo "$ADMIN_PASS" | tr -d '\n\r' | tr -cd '[:print:]')
+#  --bootstrap-password 000000 \
+#  --bootstrap-admin-url http://192.168.1.204:5000/v3/ \
+#  --bootstrap-internal-url http://192.168.1.204:5000/v3/ \
+#  --bootstrap-public-url http://192.168.1.204:5000/v3/ \
+#  --bootstrap-region-id RegionOne \
+#  --debug
         
         for i in {1..3}; do
             if keystone-manage bootstrap \
@@ -641,7 +646,8 @@ EOF
                 --bootstrap-admin-url http://$HOST_IP:5000/v3/ \
                 --bootstrap-internal-url http://$HOST_IP:5000/v3/ \
                 --bootstrap-public-url http://$HOST_IP:5000/v3/ \
-                --bootstrap-region-id RegionOne; then
+                --bootstrap-region-id RegionOne
+                --debug; then
                 echo -e "\\033[32m✓ keystone bootstrap 成功\\033[0m"
                 break
             else
