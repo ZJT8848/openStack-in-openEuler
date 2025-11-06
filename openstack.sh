@@ -293,16 +293,17 @@ else
     echo "警告: OpenStack Train 源安装失败，尝试手动配置"
     sudo dnf remove -y openstack-release-wallaby 2>/dev/null
     dnf install -y openstack-release-train
+    sudo dnf clean all
+    sudo dnf makecache
     # 手动配置repo文件
    
 fi
 # 3. 清理缓存
-sudo dnf clean all
-sudo dnf makecache
+
 # 配置环境变量
 echo "配置环境变量..."
 cat > /root/openrc.sh << eof
-HOST_IP=$HOST_IP
+HOST_IP=192.168.1.204
 HOST_PASS=000000
 HOST_NAME=controller
 HOST_IP_NODE=
@@ -331,117 +332,54 @@ maxvlan=1000
 eof
 
 source /root/openrc.sh
-# 安装基础服务：数据库、消息队列、缓存
-echo "安装基础服务..."
-# 安装数据库服务
-if yum install -y mariadb mariadb-server python3-PyMySQL; then
-    echo "数据库服务安装成功"
-else
-    handle_error "数据库相关软件包安装失败" "基础服务安装"
-fi
-# 安装消息队列服务
-if yum install -y rabbitmq-server; then
-    echo "消息队列服务安装成功"
-else
-    handle_error "rabbitmq-server 安装失败" "基础服务安装"
-fi
-# 安装缓存服务
-if yum install -y memcached python3-memcached; then
-    echo "缓存服务安装成功"
-else
-    handle_error "memcached 相关软件包安装失败" "基础服务安装"
-fi
-# 安装keystone服务
-echo "安装keystone服务..."
-# 修复数据库初始化函数
-setup_database() {
-    local db_name=$1
-    local db_user=$2
-    local db_pass=$3
-    echo "配置数据库: $db_name"
-    # 检查MariaDB服务状态
-    if ! systemctl is-active --quiet mariadb; then
-        echo -e "\033[33m警告: MariaDB服务未运行，正在启动...\033[0m"
-        systemctl start mariadb
-        sleep 5  # 增加等待时间
-        if ! systemctl is-active --quiet mariadb; then
-            # 检查端口状态
-            if ! ss -tuln | grep ':3306' > /dev/null; then
-                echo -e "\033[31m错误: MariaDB服务启动失败，3306端口未监听\033[0m"
-            fi
-            # 检查错误日志
-            if [ -f /var/log/mariadb/mariadb.log ]; then
-                echo -e "\033[31mMariaDB最近10行错误日志：\033[0m"
-                tail -n 10 /var/log/mariadb/mariadb.log
-            fi
-            handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
-        fi
-    fi
-    # 检查是否已存在数据库
-    if mysql -u root -e "SHOW DATABASES LIKE '$db_name';" 2>/dev/null | grep -q "$db_name"; then
-        echo "数据库 $db_name 已存在，跳过创建"
-    else
-        # 创建数据库
-        if ! mysql -u root -e "CREATE DATABASE $db_name CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
-            echo -e "\033[31m错误详情：MariaDB创建数据库失败，请检查权限\033[0m"
-            handle_error "创建 $db_name 数据库失败，请检查MariaDB服务状态" "数据库创建"
-        fi
-    fi
-    # 检查用户是否存在
-    if mysql -u root -e "SELECT User FROM mysql.user WHERE User='$db_user';" 2>/dev/null | grep -q "$db_user"; then
-        echo "数据库用户 $db_user 已存在，更新密码..."
-        mysql -u root -e "ALTER USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"
-        mysql -u root -e "ALTER USER '$db_user'@'%' IDENTIFIED BY '$db_pass';"
-    else
-        # 创建用户并授权
-        if ! mysql -u root -e "CREATE USER '$db_user'@'localhost' IDENTIFIED BY '$db_pass';"; then
-            echo -e "\033[31m错误详情：本地用户创建失败，请检查数据库权限\033[0m"
-            handle_error "本地用户创建失败" "数据库授权"
-        fi
-        if ! mysql -u root -e "CREATE USER '$db_user'@'%' IDENTIFIED BY '$db_pass';"; then
-            echo -e "\033[31m错误详情：远程用户创建失败，请检查数据库权限\033[0m"
-            handle_error "远程用户创建失败" "数据库授权"
-        fi
-        # 授权
-        if ! mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'localhost';"; then
-            echo -e "\033[31m错误详情：本地用户授权失败，请检查数据库权限\033[0m"
-            handle_error "本地用户授权失败" "数据库授权"
-        fi
-        if ! mysql -u root -e "GRANT ALL PRIVILEGES ON $db_name.* TO '$db_user'@'%';"; then
-            echo -e "\033[31m错误详情：远程用户授权失败，请检查数据库权限\033[0m"
-            handle_error "远程用户授权失败" "数据库授权"
-        fi
-    fi
-    echo "✓ 数据库 $db_name 配置成功"
-}
-# 使用增强版函数
-setup_database keystone keystone $KEYSTONE_DBPASS
-if yum install -y openstack-keystone httpd mod_wsgi; then
-    if [ -f /etc/keystone/keystone.conf ]; then
-        cp /etc/keystone/keystone.conf{,.bak}
-    fi
-    # 确保keystone日志目录存在且权限正确
-    mkdir -p /var/log/keystone
-    chown -R keystone:keystone /var/log/keystone
-    chmod 750 /var/log/keystone
-    # 确保keystone配置目录权限正确
-    mkdir -p /etc/keystone/fernet-keys /etc/keystone/credential-keys
-    chown -R keystone:keystone /etc/keystone/fernet-keys /etc/keystone/credential-keys
-    chmod 700 /etc/keystone/fernet-keys /etc/keystone/credential-keys
-    # 创建httpd日志目录（如果不存在）
-    mkdir -p /var/log/httpd
-    touch /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
-    chown keystone:keystone /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
-    chmod 644 /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
-    # 强化变量清理 - 严格过滤非可打印字符，特别是IP地址
-    HOST_IP=$(echo "$HOST_IP" | tr -d '\n\r' | tr -cd '0-9.')
-    KEYSTONE_DBPASS=$(echo "$KEYSTONE_DBPASS" | tr -d '\n\r' | tr -cd '[:print:]')
-    # 验证IP地址格式
-    if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        handle_error "无效的HOST_IP地址格式: $HOST_IP" "配置生成"
-    fi
-    # 修复keystone配置文件生成问题
-    # 使用正确的heredoc语法，确保变量能够正确替换
+# 安装基础服务
+    echo "正在安装数据库、消息队列和缓存服务..."
+
+    # 数据库服务安装
+    yum install -y mariadb mariadb-server python3-PyMySQL || handle_error "数据库服务安装失败" "基础服务安装"
+    cat > /etc/my.cnf.d/99-openstack.cnf << EOF
+[mysqld]
+bind-address = 0.0.0.0
+default-storage-engine = innodb
+innodb_file_per_table = on
+max_connections = 4096
+collation-server = utf8_general_ci
+character-set-server = utf8
+EOF
+
+    systemctl enable --now mariadb || handle_error "MariaDB服务启动失败" "基础服务安装"
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$DB_PASS';" || handle_error "设置root密码失败" "基础服务安装"
+    mysql -uroot -p$DB_PASS -e "FLUSH PRIVILEGES" || handle_error "刷新权限失败" "基础服务安装"
+    systemctl restart mariadb || handle_error "MariaDB重启失败" "基础服务安装"
+
+    # 消息队列服务安装
+    yum install -y rabbitmq-server || handle_error "RabbitMQ安装失败" "基础服务安装"
+    systemctl enable --now rabbitmq-server || handle_error "RabbitMQ启动失败" "基础服务安装"
+    rabbitmqctl add_user $RABBIT_USER $RABBIT_PASS || handle_error "RabbitMQ用户创建失败" "基础服务安装"
+    rabbitmqctl set_permissions $RABBIT_USER ".*" ".*" ".*" || handle_error "RabbitMQ权限设置失败" "基础服务安装"
+    systemctl restart rabbitmq-server || handle_error "RabbitMQ重启失败" "基础服务安装"
+
+    # 缓存服务安装
+    yum install -y memcached python3-memcached || handle_error "Memcached安装失败" "基础服务安装"
+    sed -i -e 's/OPTIONS.*/OPTIONS="-l 127.0.0.1,::1,$HOST_NAME"/g' /etc/sysconfig/memcached || handle_error "Memcached配置修改失败" "基础服务安装"
+    systemctl enable --now memcached || handle_error "Memcached启动失败" "基础服务安装"
+
+    # 验证基础服务状态
+    systemctl status mariadb > /dev/null || handle_error "MariaDB服务异常" "基础服务验证"
+    systemctl status rabbitmq-server > /dev/null || handle_error "RabbitMQ服务异常" "基础服务验证"
+    systemctl status memcached > /dev/null || handle_error "Memcached服务异常" "基础服务验证"
+
+    echo "✓ 基础服务安装完成"
+
+    # Keystone服务安装
+    echo "正在安装Keystone服务..."
+    mysql -uroot -p$DB_PASS -e "create database IF NOT EXISTS keystone ;" || handle_error "Keystone数据库创建失败" "Keystone安装"
+    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' IDENTIFIED BY '$KEYSTONE_DBPASS' ;" || handle_error "Keystone本地权限设置失败" "Keystone安装"
+    mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%' IDENTIFIED BY '$KEYSTONE_DBPASS' ;" || handle_error "Keystone远程权限设置失败" "Keystone安装"
+
+    yum install -y openstack-keystone httpd mod_wsgi || handle_error "Keystone软件包安装失败" "Keystone安装"
+    cp /etc/keystone/keystone.conf{,.bak} || handle_error "Keystone配置备份失败" "Keystone安装"
+
     cat > /etc/keystone/keystone.conf << eof
 [DEFAULT]
 log_dir = /var/log/keystone
@@ -453,7 +391,7 @@ log_dir = /var/log/keystone
 [cors]
 [credential]
 [database]
-connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_IP/keystone
+connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_NAME/keystone
 [domain_config]
 [endpoint_filter]
 [endpoint_policy]
@@ -492,365 +430,19 @@ provider = fernet
 [wsgi]
 eof
 
-    # 验证配置文件格式完整性
-    if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@$HOST_IP/keystone" /etc/keystone/keystone.conf; then
-        echo -e "\\033[31m错误: keystone.conf配置文件生成失败，内容不完整\\033[0m"
-        echo "生成的配置文件内容："
-        cat /etc/keystone/keystone.conf
-        handle_error "keystone.conf配置文件生成失败" "配置生成"
-    fi
+    su -s /bin/sh -c "keystone-manage db_sync" keystone || handle_error "Keystone数据库同步失败" "Keystone安装"
+    keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone || handle_error "Fernet密钥设置失败" "Keystone安装"
+    keystone-manage credential_setup --keystone-user keystone --keystone-group keystone || handle_error "凭证设置失败" "Keystone安装"
+    keystone-manage bootstrap --bootstrap-password $ADMIN_PASS \
+        --bootstrap-admin-url http://$HOST_NAME:5000/v3/ \
+        --bootstrap-internal-url http://$HOST_NAME:5000/v3/ \
+        --bootstrap-public-url http://$HOST_NAME:5000/v3/ \
+        --bootstrap-region-id RegionOne || handle_error "Keystone初始化失败" "Keystone安装"
 
-    if command -v keystone-manage &> /dev/null; then
-        # 确保数据库服务已启动
-        if ! systemctl is-active --quiet mariadb; then
-            echo -e "\033[33m警告: MariaDB服务未运行，正在启动...\033[0m"
-            systemctl start mariadb
-            sleep 5
-            if ! systemctl is-active --quiet mariadb; then
-                handle_error "MariaDB服务启动失败，请检查数据库服务状态" "数据库服务"
-            fi
-        fi
-
-        echo "正在同步keystone数据库..."
-        if ! su -s /bin/sh -c "keystone-manage db_sync" keystone; then
-            echo -e "\033[31m错误详情：$(mysql -u root -e \"SHOW ERRORS;\" 2>/dev/null)\033[0m"
-            handle_error "keystone数据库同步失败，请检查数据库连接和权限" "keystone数据库同步"
-        fi
-
-        keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone || \
-            handle_error "keystone fernet 设置失败" "keystone初始化"
-    else
-        handle_error "keystone-manage 命令未找到" "keystone安装"
-    fi
-    
-    # 确保ServerName正确设置
-    if grep -q "ServerName" /etc/httpd/conf/httpd.conf; then
-        sed -i "s/^#ServerName.*/ServerName controller/" /etc/httpd/conf/httpd.conf
-        sed -i "s/^ServerName.*/ServerName controller/" /etc/httpd/conf/httpd.conf
-    else
-        echo "ServerName controller" >> /etc/httpd/conf/httpd.conf
-    fi
-    
-    # 确保密码显示完整
-    ADMIN_PASS="000000"
-    export OS_PASSWORD=$ADMIN_PASS
-    
-    # 生成admin-openrc.sh文件时使用完整密码
-    cat > /etc/keystone/admin-openrc.sh << EOF
-export OS_PROJECT_DOMAIN_NAME=Default
-export OS_USER_DOMAIN_NAME=Default
-export OS_PROJECT_NAME=admin
-export OS_USERNAME=admin
-export OS_PASSWORD=$ADMIN_PASS
-export OS_AUTH_URL=http://$HOST_IP:5000/v3
-export OS_IDENTITY_API_VERSION=3
-export OS_IMAGE_API_VERSION=2
-EOF
-    
-    # 增加额外的诊断信息
-    echo "检查/var/log/keystone/keystone.log内容："
-    if [ -f /var/log/keystone/keystone.log ]; then
-        tail -n 20 /var/log/keystone/keystone.log
-    else
-        echo "无法找到keystone日志文件"
-    fi
-    
-    # 检查httpd错误日志
-    echo "检查/var/log/httpd/error_log内容："
-    if [ -f /var/log/httpd/error_log ]; then
-        tail -n 20 /var/log/httpd/error_log
-    else
-        echo "无法找到httpd错误日志文件"
-    fi
-    
-    # 添加memcached状态检查
-    echo "检查memcached服务状态："
-    systemctl status memcached || echo "memcached服务未运行"
-    
-    # 确保所有相关服务都已启动
-    for service in httpd memcached; do
-        if systemctl is-active --quiet $service; then
-            echo "$service 服务正在运行"
-        else
-            echo "$service 服务未运行，尝试启动..."
-            systemctl start $service 2>/dev/null || echo "警告: $service 服务启动失败"
-        fi
-    done
-    
-    # 检查端口监听情况
-    echo "检查5000端口监听情况："
-    ss -tuln | grep ':5000' || echo "端口5000未被监听"
-    
-    # 显示当前环境变量
-    echo "当前完整的环境变量设置："
-    env | grep -E 'OS_|HOST_' || echo "未找到相关环境变量"
-    
-    # 增加调试curl请求
-    echo "尝试手动curl测试keystone服务："
-    curl -v -X POST \
-         -H "Content-Type: application/json" \
-         -d '{
-            "auth": {
-                "identity": {
-                    "methods": ["password"],
-                    "password": {
-                        "user": {
-                            "name": "admin",
-                            "domain": { "id": "default" },
-                            "password": "000000"
-                        }
-                    }
-                },
-                "scope": {
-                    "project": {
-                        "name": "admin",
-                        "domain": { "id": "default" }
-                    }
-                }
-            }
-        }' \
-         http://$HOST_IP:5000/v3/auth/tokens || echo "警告: curl请求失败"
-
-    # 确保日志目录存在
-    mkdir -p /var/log/keystone
-    chown -R keystone:keystone /var/log/keystone
-    chmod 750 /var/log/keystone
-
-    # 确保日志配置正确
-    if grep -q '^log_dir' /etc/keystone/keystone.conf; then
-        sed -i 's|^log_dir.*|log_dir = /var/log/keystone|' /etc/keystone/keystone.conf
-    else
-        echo "[DEFAULT]" >> /etc/keystone/keystone.conf
-        echo "log_dir = /var/log/keystone" >> /etc/keystone/keystone.conf
-    fi
-
-    # 确保日志文件存在
-    touch /var/log/keystone/keystone.log
-    chown keystone:keystone /var/log/keystone/keystone.log
-    chmod 640 /var/log/keystone/keystone.log
-    
-    # 检查防火墙状态
-    echo "检查防火墙状态："
-    firewall-cmd --state || echo "firewalld未运行"
-    
-    # 显示SELinux状态
-    echo "检查SELinux状态："
-    getenforce || echo "无法获取SELinux状态"
-    
-    # 检查httpd进程权限
-    echo "检查httpd进程权限："
-    ps aux | grep httpd || echo "无法获取httpd进程信息"
-    
-    # 检查keystone数据库连接
-    echo "检查keystone数据库连接："
-    mysql -h $HOST_IP -ukeystone -p$KEYSTONE_DBPASS -e "SHOW DATABASES;" 2>/dev/null || echo "数据库连接失败"
-    
-    # 检查wsgi配置文件
-    echo "检查wsgi配置文件："
-    if [ -f /usr/share/keystone/wsgi-keystone.conf ]; then
-        cat /usr/share/keystone/wsgi-keystone.conf
-    else
-        echo "wsgi配置文件不存在"
-    fi
-    
-    # 创建自定义keystone WSGI配置文件（使用官方推荐方式）
-    ln -sf /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/
-    
-    systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
-    systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
-    
-    keystone-manage credential_setup --keystone-user keystone --keystone-group keystone || \
-            handle_error "keystone credential 设置失败" "keystone初始化"
-
-        # 确保httpd服务启动
-        MAX_RETRIES=3
-        WAIT_TIME=5
-        for ((i=1; i<=MAX_RETRIES; i++)); do
-            # 检查并杀死占用5000端口的进程
-            if ss -tuln | grep ':5000' > /dev/null; then
-                echo -e "\\033[33m警告: 端口5000已被占用，正在清理...\\033[0m"
-                fuser -k 5000/tcp 2>/dev/null
-                sleep 2
-            fi
-            
-            systemctl enable httpd 2>/dev/null || echo "警告: httpd 服务启用失败"
-            systemctl start httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
-            
-            if systemctl is-active --quiet httpd; then
-                echo -e "\\033[32m✓ httpd 服务已启动\\033[0m"
-                break
-            else
-                echo -e "\\033[33m警告: httpd 服务未运行 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\\033[0m"
-                sleep $WAIT_TIME
-                
-                # 检查httpd错误日志
-                if [ -f /var/log/httpd/error_log ]; then
-                    echo -e "\\033[31mhttpd 最近10行错误日志：\\033[0m"
-                    tail -n 10 /var/log/httpd/error_log
-                fi
-            fi
-        done
-
-        # 如果最终服务仍未运行
-        if ! systemctl is-active --quiet httpd; then
-            # 检查错误日志
-            if [ -f /var/log/httpd/error_log ]; then
-                echo -e "\\033[31mhttpd 详细错误日志：\\033[0m"
-                tail -n 20 /var/log/httpd/error_log
-            fi
-            handle_error "httpd 服务无法启动，请检查Apache配置和日志" "服务启动"
-        fi
-
-        # 增强bootstrap错误处理
-        echo "正在执行keystone bootstrap..."
-        # 清理ADMIN_PASS变量，确保不含特殊字符
-        ADMIN_PASS=$(echo "$ADMIN_PASS" | tr -d '\n\r' | tr -cd '[:print:]')
-        
-        for i in {1..3}; do
-            if keystone-manage bootstrap \
-                --bootstrap-password $ADMIN_PASS \
-                --bootstrap-admin-url http://$HOST_IP:5000/v3/ \
-                --bootstrap-internal-url http://$HOST_IP:5000/v3/ \
-                --bootstrap-public-url http://$HOST_IP:5000/v3/ \
-                --bootstrap-region-id RegionOne; then
-                echo -e "\\033[32m✓ keystone bootstrap 成功\\033[0m"
-                break
-            else
-                echo -e "\\033[33m警告: keystone bootstrap 尝试 $i 失败，3秒后重试...\\033[0m"
-                sleep 3
-                
-                # 检查并自动清理占用5000端口的进程
-                if ss -tuln | grep ':5000' > /dev/null; then
-                    echo -e "\\033[33m警告: 端口5000已被占用，正在清理...\\033[0m"
-                    fuser -k 5000/tcp 2>/dev/null
-                    sleep 2
-                fi
-                
-                # 检查keystone日志
-                if [ -f /var/log/keystone/keystone.log ]; then
-                    echo -e "\\033[31m最近5行错误日志：\\033[0m"
-                    grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 5
-                fi
-                
-                # 检查httpd错误日志
-                if [ -f /var/log/httpd/error_log ]; then
-                    echo -e "\\033[31mhttpd错误日志：\\033[0m"
-                    grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 10
-                fi
-            fi
-        done
-    fi
-
-    # 删除重复的httpd启动代码，避免冲突
-    # 已在前面配置了httpd服务，此处不再重复启动
-
-    # 增强服务验证机制
-    echo "正在验证keystone服务可用性..."
-    MAX_RETRIES=10
-    WAIT_TIME=10
-        export OS_PROJECT_DOMAIN_NAME=Default
-        export OS_USER_DOMAIN_NAME=Default
-        export OS_PROJECT_NAME=admin
-        export OS_USERNAME=admin
-        export OS_PASSWORD=$ADMIN_PASS
-        export OS_AUTH_URL=http://$HOST_IP:5000/v3
-        export OS_IDENTITY_API_VERSION=3
-        export OS_IMAGE_API_VERSION=2
-
-        # 确保admin-openrc.sh文件正确生成
-        cat > /etc/keystone/admin-openrc.sh << EOF
-export OS_PROJECT_DOMAIN_NAME=Default
-export OS_USER_DOMAIN_NAME=Default
-export OS_PROJECT_NAME=admin
-export OS_USERNAME=admin
-export OS_PASSWORD=$ADMIN_PASS
-export OS_AUTH_URL=http://$HOST_IP:5000/v3
-export OS_IDENTITY_API_VERSION=3
-export OS_IMAGE_API_VERSION=2
-EOF
-
-        for ((i=1; i<=MAX_RETRIES; i++)); do
-            # 确保httpd服务已运行
-            if ! systemctl is-active --quiet httpd; then
-                echo -e "\\033[31m错误: httpd 服务未运行，请检查Apache状态\\033[0m"
-                # 尝试重新启动httpd
-                systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
-                sleep 3
-            fi
-            
-            # 显示当前环境变量用于调试
-            echo "调试信息 - 当前环境变量:"
-            echo "OS_AUTH_URL=$OS_AUTH_URL"
-            echo "OS_USERNAME=$OS_USERNAME"
-            echo "OS_PASSWORD=${ADMIN_PASS:0:3}***"  # 隐藏部分密码
-            
-            if openstack token issue &> /dev/null; then
-                echo -e "\\033[32m✓ keystone服务验证成功\\033[0m"
-                break
-            else
-                echo -e "\\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\\033[0m"
-                sleep $WAIT_TIME
-                
-                # 检查服务状态
-                if ! systemctl is-active --quiet httpd; then
-                    echo -e "\\033[31m错误: httpd 服务未运行，请检查Apache状态\\033[0m"
-                fi
-                
-                # 检查keystone日志
-                if [ -f /var/log/keystone/keystone.log ]; then
-                    echo -e "\\033[31m最近5行错误日志：\\033[0m"
-                    grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 5
-                fi
-                
-                # 检查httpd错误日志
-                if [ -f /var/log/httpd/error_log ]; then
-                    echo -e "\\033[31mhttpd最近5行错误日志：\\033[0m"
-                    grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 5
-                fi
-            fi
-            
-            # 如果是最后一次尝试，显示更多诊断信息
-            if [ $i -eq $MAX_RETRIES ]; then
-                echo -e "\\033[31m达到最大重试次数，显示详细诊断信息:\\033[0m"
-                echo "检查端口监听状态:"
-                ss -tuln | grep 5000 || echo "端口5000未监听"
-                # 显示占用5000端口的进程信息
-                if ss -tuln | grep ':5000' > /dev/null; then
-                    echo "当前占用5000端口的进程:"
-                    lsof -i :5000 2>/dev/null || echo "无法获取进程信息"
-                fi
-                
-                echo "检查httpd配置:"
-                /usr/sbin/httpd -t 2>&1 || echo "httpd配置检查失败"
-                
-                if [ -f /etc/keystone/keystone.conf ]; then
-                    echo "检查keystone配置文件关键内容:"
-                    grep -E "(^connection|^provider)" /etc/keystone/keystone.conf
-                fi
-            fi
-        done
-
-        # 如果最终验证失败
-        if ! openstack token issue &> /dev/null; then
-            echo -e "\\033[31m详细错误日志：\\033[0m"
-            if [ -f /var/log/keystone/keystone.log ]; then
-                tail -n 20 /var/log/keystone/keystone.log
-            else
-                echo "无法找到keystone日志文件"
-            fi
-            # 添加端口诊断信息
-            echo -e "\\033[31m当前端口状态：\\033[0m"
-            ss -tuln | grep ':5000' || echo "端口5000未被监听"
-            handle_error "keystone bootstrap 失败，请检查/var/log/keystone/keystone.log" "keystone初始化"
-        fi
-    else
-        handle_error "keystone-manage 命令未找到" "keystone安装"
-    fi
-    
-    echo "ServerName controller" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
-    ln -sf /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/ 2>/dev/null || echo "警告: 创建符号链接失败"
-    systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
-    systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
+    echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf || handle_error "HTTPD配置更新失败" "Keystone安装"
+    ln -s /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/ || handle_error "WSGI配置链接失败" "Keystone安装"
+    systemctl enable --now httpd || handle_error "HTTPD服务启动失败" "Keystone安装"
+    systemctl restart httpd || handle_error "HTTPD服务重启失败" "Keystone安装"
 
     cat > /etc/keystone/admin-openrc.sh << EOF
 export OS_PROJECT_DOMAIN_NAME=Default
@@ -858,22 +450,16 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_NAME=admin
 export OS_USERNAME=admin
 export OS_PASSWORD=$ADMIN_PASS
-export OS_AUTH_URL=http://$HOST_IP:5000/v3
+export OS_AUTH_URL=http://$HOST_NAME:5000/v3
 export OS_IDENTITY_API_VERSION=3
 export OS_IMAGE_API_VERSION=2
 EOF
 
-    source /etc/keystone/admin-openrc.sh 2>/dev/null || echo "警告: 加载 admin-openrc 失败"
-    
-    if yum install -y python3-openstackclient; then
-        openstack project create --domain default --description "Service Project" service 2>/dev/null || echo "警告: 创建 service 项目失败"
-        openstack token issue 2>/dev/null || echo "警告: 获取 token 失败"
-    else
-        echo "警告: python3-openstackclient 安装失败"
-    fi
-else
-    echo "警告: keystone 相关软件包安装失败"
-fi
+    source /etc/keystone/admin-openrc.sh || handle_error "环境变量加载失败" "Keystone安装"
+    yum install -y python3-openstackclient || handle_error "OpenStack客户端安装失败" "Keystone安装"
+    openstack project create --domain default --description "Service Project" service || handle_error "服务项目创建失败" "Keystone安装"
+
+    echo "✓ Keystone服务安装完成"
 
 # 安装glance服务
 echo "安装glance服务..."
