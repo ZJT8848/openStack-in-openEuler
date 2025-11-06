@@ -13,35 +13,21 @@ handle_error() {
     echo -e "\033[31m错误: [$step] $error_msg\033[0m"
     echo -e "\033[31m详细错误位置: 在安装 $step 步骤时发生了 $error_msg 错误\033[0m"
     
-    # 增加常见问题排查建议
-    case "$step" in
-        "Keystone安装")
-            echo -e "\033[33m请检查以下内容：\033[0m"
-            echo "1. 确保httpd服务已启动: systemctl status httpd"
-            echo "2. 检查5000端口是否监听: ss -tuln | grep ':5000'"
-            echo "3. 查看keystone日志: tail -n 20 /var/log/keystone/keystone.log"
-            ;;
-        "Glance安装")
-            echo -e "\033[33m请检查以下内容：\033[0m"
-            echo "1. 确保9292端口未被占用: fuser -k 9292/tcp"
-            echo "2. 验证数据库连接: mysql -uroot -p$DB_PASS -e 'SHOW DATABASES;'"
-            echo "3. 查看glance日志: journalctl -u openstack-glance-api"
-            ;;
-        "基础服务安装")
-            echo -e "\033[33m请检查以下内容：\033[0m"
-            echo "1. 确保3306、5672、11211端口可用"
-            echo "2. 验证SELinux状态: getenforce"
-            echo "3. 检查防火墙规则: firewall-cmd --list-all"
-            ;;
-        *)
-            echo "通用排查建议："
-            echo "1. 检查系统日志: journalctl -xe"
-            echo "2. 验证网络连通性: ping $HOST_NAME"
-            echo "3. 确保所有必要软件包已安装"
-            ;;
-    esac
+    # 添加诊断信息输出
+    echo -e "\033[33m调试信息：\033[0m"
+    echo -e "  当前主机IP: $HOST_IP"
+    echo -e "  当前主机名: $(hostname)"
+    echo -e "  系统时间: $(date '+%Y-%m-%d %H:%M:%S')"
     
-    echo "脚本执行已中止，请根据上述提示解决问题后重试"
+    # 检查关键服务状态
+    echo -e "\033[33m服务状态检查：\033[0m"
+    systemctl status httpd mariadb rabbitmq-server memcached --no-pager | grep -E 'Active|Loaded'
+    
+    # 输出最近的错误日志
+    echo -e "\033[33m最近错误日志：\033[0m"
+    journalctl -xe --no-pager | tail -n 10
+    
+    echo "脚本执行已中止，请检查上述错误"
     exit 1
 }
 # 检查命令执行结果
@@ -365,7 +351,8 @@ source /root/openrc.sh
     echo "正在安装数据库、消息队列和缓存服务..."
 
     # 数据库服务安装
-    yum install -y mariadb mariadb-server python3-PyMySQL || handle_error "数据库服务安装失败" "基础服务安装"
+    yum install -y mariadb mariadb-server python3-PyMySQL || { log_step "数据库服务安装" "failed"; handle_error "数据库服务安装失败" "基础服务安装"; }
+    log_step "数据库服务安装" "success"
     cat > /etc/my.cnf.d/99-openstack.cnf << EOF
 [mysqld]
 bind-address = 0.0.0.0
@@ -765,39 +752,6 @@ if ! openstack token issue &> /dev/null; then
     fi
     handle_error "nova服务依赖的keystone服务未就绪" "服务依赖检查"
 fi
-
-# 添加服务验证函数
-verify_service() {
-    local service_name="$1"
-    local port="$2"
-    local step="$3"
-    
-    echo "正在验证 $service_name 服务..."
-    
-    # 检查进程状态
-    if ! systemctl is-active --quiet $service_name; then
-        handle_error "$service_name 服务未运行" "$step"
-    fi
-    
-    # 检查端口监听
-    if ! ss -tuln | grep -q ":$port"; then
-        handle_error "$service_name 服务端口 $port 未监听" "$step"
-    fi
-    
-    echo -e "\033[32m✓ $service_name 服务验证成功\033[0m"
-}
-
-# 在关键步骤后调用验证函数
-# 示例：验证Keystone服务
-verify_service "httpd" "5000" "Keystone安装"
-
-# 示例：验证Glance服务
-verify_service "openstack-glance-api" "9292" "Glance安装"
-
-# 示例：验证基础服务
-verify_service "mariadb" "3306" "基础服务安装"
-verify_service "rabbitmq-server" "5672" "基础服务安装"
-verify_service "memcached" "11211" "基础服务安装"
 
 # 确保openstack客户端已安装
     if ! yum list installed python3-openstackclient &>/dev/null; then
