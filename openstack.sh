@@ -97,10 +97,23 @@ if ! HOST_IP=$(get_host_ip 2>&1); then
     handle_error "IP检测失败: $error_msg" "IP检测"
 fi
 
-# 双重清理确保HOST_IP纯净
-HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
+# 双重清理确保HOST_IP纯净（精确过滤只保留IPv4字符）
+HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '0-9.')
 
-# 验证HOST_IP是否为有效IP格式（添加详细错误诊断）
+# 验证HOST_IP是否为有效IP格式（添加详细诊断）
+if ! [[ "$HOST_IP" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+    # 添加十六进制转储诊断（帮助识别隐藏字符）
+    hex_dump=$(echo -n "$HOST_IP" | xxd -p 2>/dev/null || echo "无法生成十六进制转储")
+    echo -e "\\033[33m调试信息：HOST_IP的十六进制转储：$hex_dump\\033[0m" >&2
+    echo -e "\\033[33m当前检测到的IP原始内容：'$HOST_IP'\\033[0m" >&2
+    handle_error "检测到的IP格式无效: $HOST_IP" "IP验证"
+fi
+
+# 附加验证：确保IP不是全0或回环地址
+if [[ "$HOST_IP" =~ ^127\\.0\\.0\\.1$ || "$HOST_IP" =~ ^0\\.0\\.0\\.0$ ]]; then
+    echo -e "\\033[31m错误：检测到回环地址或无效地址: $HOST_IP\\033[0m" >&2
+    handle_error "IP地址无效（回环或全0）: $HOST_IP" "IP验证"
+fi
 if ! [[ "$HOST_IP" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
     echo -e "\\033[31m错误详情：检测到的IP格式无效: '$HOST_IP'\\033[0m"
     echo -e "\\033[33m当前IP检测输出：\\033[0m"
