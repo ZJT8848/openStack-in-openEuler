@@ -39,20 +39,27 @@ export LC_ALL=zh_CN.UTF-8
 # 重定向所有命令的错误输出到中文提示
 exec 2> >(while read line; do echo -e "\033[33m警告: $line\033[0m"; done)
 
-# 获取本机IP地址（遵循Shell函数设计安全规范）
+# 获取本机IP地址（严格遵循Shell函数设计安全规范）
 get_host_ip() {
-    # 获取所有非回环IPv4地址
-    local ips=($(ip -4 addr show | grep -E 'inet\\s' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1))
+    # 检查ip命令是否存在
+    if ! command -v ip &> /dev/null; then
+        echo "ip命令未找到，请安装iproute2工具包" >&2
+        return 1
+    fi
+
+    # 获取所有非回环IPv4地址（使用更健壮的正则）
+    local ips=($(ip -4 addr show | grep -Eo 'inet\\s+[0-9.]+' | awk '{print $2}' | cut -d/ -f1 | grep -v '^127\\.0\\.0\\.1$'))
     
     local count=${#ips[@]}
     
     if [ $count -eq 0 ]; then
-        echo "错误: 未检测到有效IPv4地址，请检查网络配置" >&2
+        echo "未检测到有效IPv4地址，请检查网络配置" >&2
         return 1
     fi
     
     if [ $count -eq 1 ]; then
         printf '%s' "${ips[0]}"
+        return 0
     else
         echo -e "\\n检测到多个网络接口，请选择要使用的IP地址：" >&2
         for i in "${!ips[@]}"; do
@@ -61,20 +68,28 @@ get_host_ip() {
         read -p "请输入序号: " index
         if [[ $index =~ ^[0-9]+$ ]] && [ $index -lt $count ]; then
             printf '%s' "${ips[$index]}"
+            return 0
         else
-            echo "错误: 无效的序号选择" >&2
+            echo "无效的序号选择" >&2
             return 1
         fi
     fi
 }
 
-# 正确调用IP检测函数（遵循Shell函数设计安全规范）
-if ! HOST_IP=$(get_host_ip); then
-    handle_error "IP检测失败" "IP检测"
+# 安全调用IP检测函数（遵循Shell函数设计安全规范）
+if ! HOST_IP=$(get_host_ip 2>&1); then
+    # 提取错误原因（过滤控制字符）
+    local error_msg="$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')"
+    handle_error "IP检测失败: $error_msg" "IP检测"
 fi
 
-# 确保HOST_IP是纯净字符串（双重清理）
+# 双重清理确保HOST_IP纯净
 HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
+
+# 验证HOST_IP是否为有效IP格式
+if ! [[ "$HOST_IP" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+    handle_error "检测到的IP格式无效: $HOST_IP" "IP验证"
+fi
 
 NETWORK=$(echo $HOST_IP | awk -F. '{print $1"."$2"."$3".0/24"}')
 
