@@ -455,8 +455,10 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
     if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         handle_error "无效的HOST_IP地址格式: $HOST_IP" "配置生成"
     fi
-    # 修复keystone配置文件生成问题
-    # 使用正确的heredoc语法，确保变量能够正确替换
+    [auth]
+#methods = password,token
+#password = keystone.auth.plugins.password.Password  # 替换<PASSWORD>
+#token = keystone.auth.plugins.token.Token          # 替换<TOKEN>
     cat > /etc/keystone/keystone.conf << EOF
 [DEFAULT]
 log_dir = /var/log/keystone
@@ -473,8 +475,10 @@ key_repository = /etc/keystone/fernet-keys/
 key_repository = /etc/keystone/credential-keys/
 [auth]
 methods = password,token
-password = keystone.auth.plugins.password.Password
-token = keystone.auth.plugins.token.Token
+password = password
+methods = password,token
+
+token = token
 [endpoint_filter]
 driver = sql
 [identity]
