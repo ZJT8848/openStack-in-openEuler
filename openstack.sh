@@ -339,7 +339,7 @@ NOVA_PASS=000000
 NEUTRON_DBPASS=000000
 NEUTRON_PASS=000000
 METADATA_SECRET=000000
-INTERFACE_NAME=ens34
+INTERFACE_NAME=ens33
 Physical_NAME=provider
 minvlan=1
 maxvlan=1000
@@ -432,35 +432,41 @@ setup_database() {
 # 使用增强版函数
 setup_database keystone keystone $KEYSTONE_DBPASS
 if yum install -y openstack-keystone httpd mod_wsgi; then
-    if [ -f /etc/keystone/keystone.conf ]; then
-        cp /etc/keystone/keystone.conf{,.bak}
-    fi
     # 确保keystone日志目录存在且权限正确
     mkdir -p /var/log/keystone
     chown -R keystone:keystone /var/log/keystone
     chmod 750 /var/log/keystone
+    
     # 确保keystone配置目录权限正确
     mkdir -p /etc/keystone/fernet-keys /etc/keystone/credential-keys
     chown -R keystone:keystone /etc/keystone/fernet-keys /etc/keystone/credential-keys
     chmod 700 /etc/keystone/fernet-keys /etc/keystone/credential-keys
+    
     # 创建httpd日志目录（如果不存在）
     mkdir -p /var/log/httpd
     touch /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
     chown keystone:keystone /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
     chmod 644 /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
+    
+    # 备份原有配置文件
+    if [ -f /etc/keystone/keystone.conf ]; then
+        cp /etc/keystone/keystone.conf /etc/keystone/keystone.conf.bak
+    fi
+    
     # 强化变量清理 - 严格过滤非可打印字符，特别是IP地址
     HOST_IP=$(echo "$HOST_IP" | tr -d '\n\r' | tr -cd '0-9.')
     KEYSTONE_DBPASS=$(echo "$KEYSTONE_DBPASS" | tr -d '\n\r' | tr -cd '[:print:]')
+    
     # 验证IP地址格式
     if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         handle_error "无效的HOST_IP地址格式: $HOST_IP" "配置生成"
     fi
-    sudo yum reinstall openstack-keystone python3-keystone
-#    [auth]
-#methods = password,token
-#password = keystone.auth.plugins.password.Password  # 替换<PASSWORD>
-#token = keystone.auth.plugins.token.Token          # 替换<TOKEN>
-    cat > /etc/keystone/keystone.conf << EOF
+    
+    # 重新安装keystone包
+    sudo yum reinstall -y openstack-keystone python3-keystone
+    
+    # 生成keystone配置文件
+    cat > /etc/keystone/keystone.conf << 'EOF'
 [DEFAULT]
 log_dir = /var/log/keystone
 log_file = keystone.log
@@ -500,9 +506,14 @@ application = keystone.server.wsgi_app:init_application
 [cache]
 EOF
 
+    # 验证配置文件是否成功创建
+    if [ ! -f /etc/keystone/keystone.conf ]; then
+        handle_error "keystone.conf配置文件创建失败" "配置生成"
+    fi
+
     # 验证配置文件格式完整性
     if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@$HOST_IP/keystone" /etc/keystone/keystone.conf; then
-        echo -e "\\033[31m错误: keystone.conf配置文件生成失败，内容不完整\\033[0m"
+        echo -e "\\033[31m错误: keystone.conf配置文件生成失败，数据库连接字符串不完整\\033[0m"
         echo "生成的配置文件内容："
         cat /etc/keystone/keystone.conf
         handle_error "keystone.conf配置文件生成失败" "配置生成"
@@ -633,12 +644,7 @@ EOF
         echo "正在执行keystone bootstrap..."
         # 清理ADMIN_PASS变量，确保不含特殊字符
         ADMIN_PASS=$(echo "$ADMIN_PASS" | tr -d '\n\r' | tr -cd '[:print:]')
-#  --bootstrap-password 000000 \
-#  --bootstrap-admin-url http://192.168.1.204:5000/v3/ \
-#  --bootstrap-internal-url http://192.168.1.204:5000/v3/ \
-#  --bootstrap-public-url http://192.168.1.204:5000/v3/ \
-#  --bootstrap-region-id RegionOne \
-#  --debug
+
         
         for i in {1..3}; do
             if keystone-manage bootstrap \
