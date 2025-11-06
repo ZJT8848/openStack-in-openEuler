@@ -622,9 +622,9 @@ EOF
         for i in {1..3}; do
             if keystone-manage bootstrap \
                 --bootstrap-password $ADMIN_PASS \
-                --bootstrap-admin-url http://$HOST_NAME:5000/v3/ \
-                --bootstrap-internal-url http://$HOST_NAME:5000/v3/ \
-                --bootstrap-public-url http://$HOST_NAME:5000/v3/ \
+                --bootstrap-admin-url http://$HOST_IP:5000/v3/ \
+                --bootstrap-internal-url http://$HOST_IP:5000/v3/ \
+                --bootstrap-public-url http://$HOST_IP:5000/v3/ \
                 --bootstrap-region-id RegionOne; then
                 echo -e "\\033[32m✓ keystone bootstrap 成功\\033[0m"
                 break
@@ -649,6 +649,7 @@ EOF
         echo "正在验证keystone服务可用性..."
         MAX_RETRIES=5
         WAIT_TIME=5
+        export OS_AUTH_URL=http://$HOST_IP:5000/v3
         for ((i=1; i<=MAX_RETRIES; i++)); do
             # 确保httpd服务已运行
             if ! systemctl is-active --quiet httpd; then
