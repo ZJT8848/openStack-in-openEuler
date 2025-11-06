@@ -466,14 +466,14 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
     sudo yum reinstall -y openstack-keystone python3-keystone
     
     # 生成keystone配置文件
-    cat > /etc/keystone/keystone.conf << 'EOF'
+    cat > /etc/keystone/keystone.conf << EOF
 [DEFAULT]
 log_dir = /var/log/keystone
 log_file = keystone.log
 debug = True
 verbose = True
 [database]
-connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_IP/keystone
+connection = mysql+pymysql://keystone:${KEYSTONE_DBPASS}@${HOST_IP}/keystone
 [token]
 provider = fernet
 [fernet_tokens]
@@ -512,7 +512,7 @@ EOF
     fi
 
     # 验证配置文件格式完整性
-    if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@$HOST_IP/keystone" /etc/keystone/keystone.conf; then
+    if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@${HOST_IP}/keystone" /etc/keystone/keystone.conf; then
         echo -e "\\033[31m错误: keystone.conf配置文件生成失败，数据库连接字符串不完整\\033[0m"
         echo "生成的配置文件内容："
         cat /etc/keystone/keystone.conf
@@ -1929,3 +1929,20 @@ echo "密码: $ADMIN_PASS"
 echo "作者： ZJT8848,链接： https://github.com/ZJT8848/openStack-in-openEuler"
 echo "部分教程来源作者： huhy,链接： https://www.cnblogs.com/hoyeong/p/18793119"
 echo "如果仍然遇到问题，请运行: bash /root/fix-dashboard.sh"
+
+# 脚本执行完毕，报告错误
+if [ ${#ERROR_LOG[@]} -gt 0 ]; then
+    echo -e "\n\033[31m##################################################\033[0m"
+    echo -e "\033[31m#                 错误汇总报告                   #\033[0m"
+    echo -e "\033[31m##################################################\033[0m"
+    
+    for ((i=0; i<${#ERROR_LOG[@]}; i++)); do
+        echo -e "\033[31m[$((i+1))] ${ERROR_LOG[$i]}\033[0m"
+    done
+    
+    echo -e "\n\033[33m脚本已执行完成，但存在上述错误，请检查并修复\033[0m"
+    exit 1
+else
+    echo -e "\n\033[32m✓ 脚本执行完成，未发现错误\033[0m"
+    exit 0
+fi
