@@ -4,7 +4,7 @@
 # 整合所有步骤到一个脚本中
 
 # 定义节点信息
-NODES=("192.168.1.177 controller")
+NODES=("192.168.1.204 controller")
 
 # 定义当前节点的密码（默认集群统一密码）
 HOST_PASS="000000"
@@ -41,23 +41,26 @@ exec 2> >(while read line; do echo -e "\033[33m警告: $line\033[0m"; done)
 
 # 获取本机IP地址（严格遵循Shell函数设计安全规范）
 get_host_ip() {
+    # 检查是否为交互式终端
+    local is_interactive=0
+    if [ -t 0 ]; then
+        is_interactive=1
+    fi
+
     # 获取ip命令的路径（避免PATH问题）
-    IP_CMD=$(command -v ip || echo "/sbin/ip" || echo "/usr/sbin/ip")
+    local IP_CMD=$(command -v ip || echo "/sbin/ip" || echo "/usr/sbin/ip")
     if [ ! -x "$IP_CMD" ]; then
         echo "ip命令未找到，请安装iproute2工具包" >&2
         return 1
     fi
 
-    # 获取所有非回环IPv4地址（修复正则表达式问题）
-    # 使用 'inet [0-9.]+' 替代 'inet\\s+[0-9.]+' 避免grep兼容性问题
-    local ips=($($IP_CMD -4 addr show 2>/dev/null | grep -Eo 'inet [0-9.]+' | awk '{print $2}' | cut -d/ -f1 | grep -v '^127\\.0\\.0\\.1$'))
+    # 获取所有非回环IPv4地址（精确过滤回环地址）
+    local ips=($($IP_CMD -4 addr show 2>/dev/null | grep -E 'inet\s' | grep -v "127\\.0\\.0\\.1" | awk '{print $2}' | cut -d/ -f1))
     
     local count=${#ips[@]}
     
     if [ $count -eq 0 ]; then
-        echo "未检测到有效IPv4地址，请检查网络配置" >&2
-        echo "网络接口详细信息：" >&2
-        $IP_CMD -4 addr show >&2
+        echo "未检测到有效IPv4地址" >&2
         return 1
     fi
     
@@ -65,6 +68,13 @@ get_host_ip() {
         printf '%s' "${ips[0]}"
         return 0
     else
+        # 非交互式环境自动选择第一个IP
+        if [ $is_interactive -eq 0 ]; then
+            printf '%s' "${ips[0]}"
+            return 0
+        fi
+
+        # 交互式环境才提示用户选择
         echo -e "\\n检测到多个网络接口，请选择要使用的IP地址：" >&2
         for i in "${!ips[@]}"; do
             echo "  [$i] ${ips[$i]}" >&2
@@ -80,15 +90,10 @@ get_host_ip() {
     fi
 }
 
-# 安全调用IP检测函数（增强错误诊断）
+# 安全调用IP检测函数（限制错误消息长度）
 if ! HOST_IP=$(get_host_ip 2>&1); then
-    # 提取错误原因（保留原始错误信息）
-    error_msg=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
-    echo -e "\\033[31m错误详情：IP检测失败: $error_msg\\033[0m"
-    echo -e "\\033[33m当前IP检测命令输出：\\033[0m"
-    ip -4 addr show 2>&1 | while read line; do
-        echo -e "\\033[33m> $line\\033[0m"
-    done
+    # 限制错误消息长度为100字符，避免'文件过长'问题
+    error_msg=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]' | cut -c1-100)
     handle_error "IP检测失败: $error_msg" "IP检测"
 fi
 
