@@ -454,6 +454,7 @@ log_dir = /var/log/keystone
 log_file = keystone.log
 debug = True
 verbose = True
+log_config_append = /etc/keystone/logging.conf
 [database]
 connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_IP/keystone
 [token]
@@ -486,6 +487,7 @@ application = keystone.server.wsgi_app:init_application
 # 显式禁用LDAP配置以防止驱动加载错误
 [ldap]
 [identity_mapping]
+[cache]
 EOF
 
     # 验证配置文件格式完整性
@@ -524,6 +526,11 @@ EOF
         sed -i "s/ServerName.*/ServerName $HOST_IP/" /etc/httpd/conf/httpd.conf
     else
         echo "ServerName $HOST_IP" >> /etc/httpd/conf/httpd.conf
+    fi
+    
+    # 添加额外的ServerName配置以避免Apache警告
+    if ! grep -q "ServerName controller" /etc/httpd/conf/httpd.conf; then
+        echo "ServerName controller" >> /etc/httpd/conf/httpd.conf
     fi
     
     # 创建自定义keystone WSGI配置文件
@@ -577,6 +584,13 @@ EOF
         MAX_RETRIES=3
         WAIT_TIME=5
         for ((i=1; i<=MAX_RETRIES; i++)); do
+            # 检查并杀死占用5000端口的进程
+            if ss -tuln | grep ':5000' > /dev/null; then
+                echo -e "\\033[33m警告: 端口5000已被占用，正在清理...\\033[0m"
+                fuser -k 5000/tcp 2>/dev/null
+                sleep 2
+            fi
+            
             systemctl enable httpd 2>/dev/null || echo "警告: httpd 服务启用失败"
             systemctl start httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
             
@@ -586,11 +600,6 @@ EOF
             else
                 echo -e "\\033[33m警告: httpd 服务未运行 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\\033[0m"
                 sleep $WAIT_TIME
-                
-                # 检查5000端口占用情况
-                if ss -tuln | grep ':5000' > /dev/null; then
-                    echo -e "\\033[31m错误: 端口5000已被占用，请检查冲突服务\\033[0m"
-                fi
                 
                 # 检查httpd错误日志
                 if [ -f /var/log/httpd/error_log ]; then
@@ -628,10 +637,9 @@ EOF
                 echo -e "\\033[33m警告: keystone bootstrap 尝试 $i 失败，3秒后重试...\\033[0m"
                 sleep 3
                 
-                # 检查5000端口占用情况
+                # 检查并自动清理占用5000端口的进程
                 if ss -tuln | grep ':5000' > /dev/null; then
-                    echo -e "\\033[31m错误: 端口5000已被占用，请检查冲突服务\\033[0m"
-                    # 杀死占用端口的进程
+                    echo -e "\\033[33m警告: 端口5000已被占用，正在清理...\\033[0m"
                     fuser -k 5000/tcp 2>/dev/null
                     sleep 2
                 fi
@@ -707,6 +715,11 @@ EOF
                 echo -e "\\033[31m达到最大重试次数，显示详细诊断信息:\\033[0m"
                 echo "检查端口监听状态:"
                 ss -tuln | grep 5000 || echo "端口5000未监听"
+                # 显示占用5000端口的进程信息
+                if ss -tuln | grep ':5000' > /dev/null; then
+                    echo "当前占用5000端口的进程:"
+                    lsof -i :5000 2>/dev/null || netstat -tlnp | grep :5000
+                fi
                 
                 echo "检查httpd配置:"
                 httpd -t 2>&1 || echo "httpd配置检查失败"
@@ -726,6 +739,9 @@ EOF
             else
                 echo "无法找到keystone日志文件"
             fi
+            # 添加端口诊断信息
+            echo -e "\\033[31m当前端口状态：\\033[0m"
+            ss -tuln | grep ':5000' || echo "端口5000未被监听"
             handle_error "keystone bootstrap 失败，请检查/var/log/keystone/keystone.log" "keystone初始化"
         fi
     else
