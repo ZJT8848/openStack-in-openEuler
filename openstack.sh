@@ -47,8 +47,8 @@ get_host_ip() {
         return 1
     fi
 
-    # 获取所有非回环IPv4地址（使用更健壮的正则）
-    local ips=($(ip -4 addr show | grep -Eo 'inet\\s+[0-9.]+' | awk '{print $2}' | cut -d/ -f1 | grep -v '^127\\.0\\.0\\.1$'))
+    # 获取所有非回环IPv4地址（使用更健壮的提取方式）
+    local ips=($(ip -4 addr show | grep -E 'inet\\s' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1))
     
     local count=${#ips[@]}
     
@@ -76,10 +76,10 @@ get_host_ip() {
     fi
 }
 
-# 安全调用IP检测函数（遵循Shell函数设计安全规范）
+# 安全调用IP检测函数（修复全局作用域local错误）
 if ! HOST_IP=$(get_host_ip 2>&1); then
-    # 提取错误原因（过滤控制字符）
-    local error_msg="$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')"
+    # 修复：移除local（全局作用域不能使用local）
+    error_msg=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
     handle_error "IP检测失败: $error_msg" "IP检测"
 fi
 
