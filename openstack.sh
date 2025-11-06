@@ -41,19 +41,23 @@ exec 2> >(while read line; do echo -e "\033[33m警告: $line\033[0m"; done)
 
 # 获取本机IP地址（严格遵循Shell函数设计安全规范）
 get_host_ip() {
-    # 检查ip命令是否存在
-    if ! command -v ip &> /dev/null; then
+    # 获取ip命令的路径（避免PATH问题）
+    IP_CMD=$(command -v ip || echo "/sbin/ip" || echo "/usr/sbin/ip")
+    if [ ! -x "$IP_CMD" ]; then
         echo "ip命令未找到，请安装iproute2工具包" >&2
         return 1
     fi
 
-    # 获取所有非回环IPv4地址（使用最健壮的提取方式）
-    local ips=($(ip -4 addr show | grep -Eo 'inet\\s+[0-9.]+' | awk '{print $2}' | cut -d/ -f1 | grep -v '^127\\.0\\.0\\.1$'))
+    # 获取所有非回环IPv4地址（修复正则表达式问题）
+    # 使用 'inet [0-9.]+' 替代 'inet\\s+[0-9.]+' 避免grep兼容性问题
+    local ips=($($IP_CMD -4 addr show 2>/dev/null | grep -Eo 'inet [0-9.]+' | awk '{print $2}' | cut -d/ -f1 | grep -v '^127\\.0\\.0\\.1$'))
     
     local count=${#ips[@]}
     
     if [ $count -eq 0 ]; then
         echo "未检测到有效IPv4地址，请检查网络配置" >&2
+        echo "网络接口详细信息：" >&2
+        $IP_CMD -4 addr show >&2
         return 1
     fi
     
@@ -76,10 +80,15 @@ get_host_ip() {
     fi
 }
 
-# 安全调用IP检测函数（彻底移除全局作用域local）
+# 安全调用IP检测函数（增强错误诊断）
 if ! HOST_IP=$(get_host_ip 2>&1); then
-    # 全局作用域必须使用普通变量赋值
+    # 提取错误原因（保留原始错误信息）
     error_msg=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
+    echo -e "\\033[31m错误详情：IP检测失败: $error_msg\\033[0m"
+    echo -e "\\033[33m当前IP检测命令输出：\\033[0m"
+    ip -4 addr show 2>&1 | while read line; do
+        echo -e "\\033[33m> $line\\033[0m"
+    done
     handle_error "IP检测失败: $error_msg" "IP检测"
 fi
 
