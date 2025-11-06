@@ -12,21 +12,6 @@ handle_error() {
     local step="$2"
     echo -e "\033[31m错误: [$step] $error_msg\033[0m"
     echo -e "\033[31m详细错误位置: 在安装 $step 步骤时发生了 $error_msg 错误\033[0m"
-    
-    # 添加诊断信息输出
-    echo -e "\033[33m调试信息：\033[0m"
-    echo -e "  当前主机IP: $HOST_IP"
-    echo -e "  当前主机名: $(hostname)"
-    echo -e "  系统时间: $(date '+%Y-%m-%d %H:%M:%S')"
-    
-    # 检查关键服务状态
-    echo -e "\033[33m服务状态检查：\033[0m"
-    systemctl status httpd mariadb rabbitmq-server memcached --no-pager | grep -E 'Active|Loaded'
-    
-    # 输出最近的错误日志
-    echo -e "\033[33m最近错误日志：\033[0m"
-    journalctl -xe --no-pager | tail -n 10
-    
     echo "脚本执行已中止，请检查上述错误"
     exit 1
 }
@@ -154,8 +139,14 @@ cat > /etc/motd <<EOF
  ################################
 EOF
 # 禁用selinux
-sed -i 's/SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+cp /etc/selinux/config /etc/selinux/config.bak
+sed -i 's/SELINUX=.*/SELINUX=permissive/g' /etc/selinux/config
 setenforce 0
+
+# 添加SELinux策略配置
+semanage permissive -a httpd_t 2>/dev/null || echo "警告: 无法设置httpd为宽容模式"
+semanage port -a -t http_port_t -p tcp 5000 2>/dev/null || echo "警告: 无法添加5000端口到http_port_t"
+
 # firewalld
 systemctl stop firewalld
 systemctl disable firewalld >> /dev/null 2>&1
@@ -351,8 +342,7 @@ source /root/openrc.sh
     echo "正在安装数据库、消息队列和缓存服务..."
 
     # 数据库服务安装
-    yum install -y mariadb mariadb-server python3-PyMySQL || { log_step "数据库服务安装" "failed"; handle_error "数据库服务安装失败" "基础服务安装"; }
-    log_step "数据库服务安装" "success"
+    yum install -y mariadb mariadb-server python3-PyMySQL || handle_error "数据库服务安装失败" "基础服务安装"
     cat > /etc/my.cnf.d/99-openstack.cnf << EOF
 [mysqld]
 bind-address = 0.0.0.0
@@ -372,7 +362,12 @@ EOF
     yum install -y rabbitmq-server || handle_error "RabbitMQ安装失败" "基础服务安装"
     systemctl enable --now rabbitmq-server || handle_error "RabbitMQ启动失败" "基础服务安装"
     rabbitmqctl add_user $RABBIT_USER $RABBIT_PASS || handle_error "RabbitMQ用户创建失败" "基础服务安装"
-    rabbitmqctl set_permissions $RABBIT_USER ".*" ".*" ".*" || handle_error "RabbitMQ权限设置失败" "基础服务安装"
+    # 优化：使用完整参数格式并添加虚拟主机指定
+    rabbitmqctl set_permissions -p / $RABBIT_USER ".*" ".*" ".*" || handle_error "RabbitMQ权限设置失败" "基础服务安装"
+    # 增加权限验证步骤
+    if ! rabbitmqctl list_permissions | grep -q "$RABBIT_USER"; then
+        handle_error "RabbitMQ用户权限验证失败，未找到$RABBIT_USER的权限记录" "权限验证"
+    fi
     systemctl restart rabbitmq-server || handle_error "RabbitMQ重启失败" "基础服务安装"
 
     # 缓存服务安装
@@ -1425,10 +1420,10 @@ WSGISocketPrefix /var/run/httpd/wsgi
         AllowOverride None
     </Directory>
     
-    # 错误日志
+    # 错误日志 - 增强日志级别以帮助调试
     ErrorLog /var/log/httpd/dashboard_error.log
     CustomLog /var/log/httpd/dashboard_access.log combined
-    LogLevel warn
+    LogLevel debug
 </VirtualHost>
 EOF
 
@@ -1482,12 +1477,23 @@ if [ -d "/usr/share/openstack-dashboard/static" ]; then
     rm -rf /usr/share/openstack-dashboard/static/*
 fi
 
-# 运行collectstatic命令
+# 运行collectstatic命令并捕获输出
+echo "正在执行静态文件收集..."
 if command -v python3 &> /dev/null && [ -f "/usr/share/openstack-dashboard/manage.py" ]; then
-    python3 /usr/share/openstack-dashboard/manage.py collectstatic --noinput --clear 2>/dev/null || echo "警告: 静态文件收集失败"
+    if python3 /usr/share/openstack-dashboard/manage.py collectstatic --noinput --clear 2>&1 | tee /tmp/collectstatic.log; then
+        echo "✓ 静态文件收集成功"
+    else
+        echo -e "\033[31m✗ 静态文件收集失败，请检查/tmp/collectstatic.log\033[0m"
+        cat /tmp/collectstatic.log
+    fi
 else
     echo "警告: 无法找到python3或manage.py，跳过静态文件收集"
 fi
+
+# 确保静态文件目录权限正确
+chown -R apache:apache /usr/share/openstack-dashboard/static
+find /usr/share/openstack-dashboard/static -type d -exec chmod 755 {} \;
+find /usr/share/openstack-dashboard/static -type f -exec chmod 644 {} \;
 
 # 7. 重启服务
 echo "重启相关服务..."
@@ -1513,55 +1519,76 @@ cat > /root/fix-dashboard.sh << 'EOF'
 #!/bin/bash
 # OpenStack Dashboard修复脚本
 
-# 设置中文环境
+// 设置中文环境
 export LANG=zh_CN.UTF-8
 export LC_ALL=zh_CN.UTF-8
 
-# 错误处理函数
-handle_error() {
-    echo -e "\033[31m错误: $1\033[0m"
-    exit 1
-}
+echo "开始诊断OpenStack Dashboard问题..."
 
-check_result() {
-    if [ $? -ne 0 ]; then
-        handle_error "$1"
+echo "1. 检查系统服务状态："
+// 检查关键服务状态
+for service in httpd memcached mariadb rabbitmq-server; do
+    if systemctl is-active --quiet $service; then
+        echo "✓ $service 服务运行正常"
+    else
+        echo -e "\033[31m✗ $service 服务未运行，请执行: systemctl start $service\033[0m"
     fi
-}
+done
 
-echo "开始修复OpenStack Dashboard..."
+echo "\n2. 检查端口监听状态："
+// 检查关键端口
+for port in 80 11211 3306 5672; do
+    if ss -tuln | grep -q ":$port"; then
+        echo "✓ 端口 $port 正在监听"
+    else
+        echo -e "\033[31m✗ 端口 $port 未监听\033[0m"
+    fi
+done
 
-# 重启服务
-echo "正在重启服务..."
+echo "\n3. 测试数据库连接："
+if mysql -h controller -u keystone -p$KEYSTONE_DBPASS -e "SELECT 1" >/dev/null 2>&1; then
+    echo "✓ 数据库连接正常"
+else
+    echo -e "\033[31m✗ 数据库连接失败，请检查keystone用户权限\033[0m"
+fi
+
+echo "\n4. 测试RabbitMQ连接："
+if rabbitmqctl list_users | grep -q openstack; then
+    echo "✓ RabbitMQ用户存在"
+else
+    echo -e "\033[31m✗ RabbitMQ用户openstack不存在\033[0m"
+fi
+
+echo "\n5. 执行最终修复步骤："
+// 重启服务
 systemctl restart memcached
 systemctl restart httpd
-check_result "服务重启失败，请检查httpd和memcached状态"
 
-# 检查服务状态
-echo "检查服务状态..."
-if systemctl is-active --quiet httpd; then
-    echo "✓ Apache服务运行正常"
-else
-    echo -e "\033[31m✗ Apache服务未运行，请检查httpd服务状态\033[0m"
+// 检查服务状态
+sleep 3
+if ! systemctl is-active --quiet httpd; then
+    echo -e "\033[31m✗ Apache服务启动失败，请检查/var/log/httpd/error_log\033[0m"
+    exit 1
 fi
 
-if systemctl is-active --quiet memcached; then
-    echo "✓ Memcached服务运行正常"
-else
-    echo -e "\033[31m✗ Memcached服务未运行，请检查memcached服务状态\033[0m"
-fi
-
-# 测试Dashboard访问
-echo "测试Dashboard访问..."
+echo "\n6. 测试Dashboard访问："
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/dashboard/)
 echo "HTTP状态码: $HTTP_CODE"
-if [ "$HTTP_CODE" != "200" ]; then
-    echo -e "\033[31m无法访问Dashboard，请检查服务是否正常运行（状态码: $HTTP_CODE）\033[0m"
+if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "302" ]; then
+    echo -e "\033[31m✗ 无法访问Dashboard（状态码: $HTTP_CODE），请检查Apache配置\033[0m"
+    echo "建议排查步骤："
+    echo "1. 检查 /etc/httpd/conf.d/openstack-dashboard.conf 配置"
+    echo "2. 查看 /var/log/httpd/dashboard_error.log 错误日志"
+    echo "3. 确认静态文件收集是否成功"
+    exit 1
 else
-    echo "✓ Dashboard访问正常"
+    echo "✓ Dashboard访问正常 (状态码: $HTTP_CODE)"
 fi
 
-echo "修复完成！请清除浏览器缓存后访问 http://$HOST_IP/dashboard"
+echo "\n修复完成！请清除浏览器缓存后访问 http://$HOST_IP/dashboard"
+echo "如果仍有问题，请查看详细日志："
+echo "- Apache错误日志: /var/log/httpd/dashboard_error.log"
+echo "- Keystone日志: /var/log/keystone/keystone.log"
 EOF
 
 chmod +x /root/fix-dashboard.sh
