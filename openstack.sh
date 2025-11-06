@@ -600,7 +600,7 @@ log_file = keystone.log
 debug = True
 verbose = True
 [database]
-connection = mysql+pymysql://keystone:${KEYSTONE_DBPASS}@${HOST_IP}/keystone
+connection = mysql+pymysql://keystone:${KEYSTONE_DBPASS}@${HOST_IP}:3306/keystone
 [token]
 provider = fernet
 [fernet_tokens]
@@ -1057,7 +1057,7 @@ if yum install -y openstack-glance; then
 [cinder]
 [cors]
 [database]
-connection = mysql+pymysql://glance:$GLANCE_DBPASS@$HOST_IP/glance
+connection = mysql+pymysql://glance:$GLANCE_DBPASS@$HOST_IP:3306/glance
 [file]
 [glance.store.http.store]
 [glance.store.rbd.store]
