@@ -473,7 +473,7 @@ log_file = keystone.log
 debug = True
 verbose = True
 [database]
-connection = mysql+pymysql://keystone:${KEYSTONE_DBPASS}@controller/keystone
+connection = mysql+pymysql://keystone:${KEYSTONE_DBPASS}@${HOST_IP}/keystone
 [token]
 provider = fernet
 [fernet_tokens]
