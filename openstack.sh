@@ -530,6 +530,73 @@ setup_database() {
     return 0
 }
 
+# 检查并安装pip（如果不存在）
+install_pip_if_needed() {
+    if ! command -v pip3 &> /dev/null && ! command -v pip &> /dev/null; then
+        echo "安装pip工具..."
+        if command -v python3 &> /dev/null; then
+            # 尝试使用dnf/yum安装python3-pip
+            if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
+                dnf install -y python3-pip || echo "警告: 使用dnf安装python3-pip失败"
+            else
+                yum install -y python3-pip || echo "警告: 使用yum安装python3-pip失败"
+            fi
+            
+            # 如果包管理器安装失败，尝试手动安装
+            if ! command -v pip3 &> /dev/null; then
+                if wget -O /tmp/get-pip.py https://bootstrap.pypa.io/get-pip.py; then
+                    python3 /tmp/get-pip.py >/dev/null 2>&1
+                    rm -f /tmp/get-pip.py
+                else
+                    echo "警告: 下载get-pip.py失败"
+                    ERROR_LOG+=("[pip安装] 下载get-pip.py失败")
+                fi
+            fi
+        elif command -v python &> /dev/null; then
+            # 对于python2环境
+            if wget -O /tmp/get-pip.py https://bootstrap.pypa.io/pip/2.7/get-pip.py; then
+                python /tmp/get-pip.py >/dev/null 2>&1
+                rm -f /tmp/get-pip.py
+            else
+                echo "警告: 下载get-pip.py (python2版本) 失败"
+                ERROR_LOG+=("[pip安装] 下载get-pip.py (python2版本) 失败")
+            fi
+        fi
+    fi
+}
+
+# 修复Python依赖库版本冲突
+fix_python_dependencies() {
+    echo "检查并修复Python依赖库版本冲突..."
+    
+    # 确保pip已安装
+    install_pip_if_needed
+    
+    # 使用pip3优先处理（如果存在）
+    if command -v pip3 &> /dev/null; then
+        # 卸载冲突的库
+        pip3 uninstall -y urllib3 chardet >/dev/null 2>&1 || true
+        # 重新安装requests
+        pip3 install requests --upgrade >/dev/null 2>&1 || echo "警告: 使用pip3升级requests失败"
+    elif command -v pip &> /dev/null; then
+        # 使用pip处理（可能是pip2）
+        pip uninstall -y urllib3 chardet >/dev/null 2>&1 || true
+        pip install requests --upgrade >/dev/null 2>&1 || echo "警告: 使用pip升级requests失败"
+    else
+        echo "警告: 系统中未找到pip命令，跳过依赖库修复"
+        ERROR_LOG+=("[依赖修复] 系统中未找到pip命令")
+        return 1
+    fi
+    
+    # 验证修复结果
+    if python3 -c "import requests; import urllib3" 2>/dev/null; then
+        echo "✓ Python依赖库版本冲突已修复"
+    else
+        echo "警告: Python依赖库版本冲突修复失败"
+        ERROR_LOG+=("[依赖修复] Python依赖库版本冲突修复失败")
+    fi
+}
+
 # 使用增强版函数
 setup_database keystone keystone $KEYSTONE_DBPASS
 
@@ -575,10 +642,42 @@ if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf ins
         # 安装额外的keystone依赖包
         sudo yum install -y python3-oauthlib python3-requests-oauthlib
     fi
+    
+    # 修复Python依赖库版本冲突问题
+    fix_python_dependencies
+    
     # 验证keystone包完整性
     if ! rpm -q openstack-keystone python3-keystone; then
         echo "警告: keystone包安装不完整，继续执行"
         ERROR_LOG+=("[包安装] keystone包安装不完整")
+    fi
+    
+    # 添加处理Python依赖库版本冲突的修复步骤
+    echo "检查并修复Python依赖库版本冲突..."
+    if command -v pip &> /dev/null; then
+        # 卸载不兼容的urllib3和chardet库
+        pip uninstall -y urllib3 chardet >/dev/null 2>&1 || echo "警告: 卸载urllib3和chardet库失败"
+        # 重新安装requests库
+        pip install requests >/dev/null 2>&1 || echo "警告: 重新安装requests库失败"
+    else
+        # 如果pip未安装，先安装pip
+        if command -v python &> /dev/null; then
+            # 下载并安装pip
+            if wget -O /tmp/get-pip.py https://bootstrap.pypa.io/get-pip.py; then
+                python /tmp/get-pip.py >/dev/null 2>&1
+                # 然后处理依赖库问题
+                pip uninstall -y urllib3 chardet >/dev/null 2>&1 || echo "警告: 卸载urllib3和chardet库失败"
+                pip install requests >/dev/null 2>&1 || echo "警告: 重新安装requests库失败"
+                # 清理临时文件
+                rm -f /tmp/get-pip.py
+            else
+                echo "警告: 下载get-pip.py失败"
+                ERROR_LOG+=("[pip安装] 下载get-pip.py失败")
+            fi
+        else
+            echo "警告: 系统中未找到python命令"
+            ERROR_LOG+=("[pip安装] 系统中未找到python命令")
+        fi
     fi
     
     # 验证keystone认证插件是否可用
@@ -589,6 +688,25 @@ if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf ins
             sudo dnf reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
         else
             sudo yum reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
+        fi
+    fi
+    
+    # 特殊处理：解决urllib3和chardet版本冲突问题
+    echo "检查Python依赖库版本兼容性..."
+    if python3 -c "import requests; import urllib3" 2>/dev/null; then
+        echo "✓ Python依赖库版本兼容"
+    else
+        echo "警告: Python依赖库版本不兼容，正在修复..."
+        # 尝试修复six和urllib3版本冲突
+        if command -v pip3 &> /dev/null; then
+            pip3 uninstall -y urllib3 chardet >/dev/null 2>&1
+            pip3 install requests >/dev/null 2>&1
+        elif command -v pip &> /dev/null; then
+            pip uninstall -y urllib3 chardet >/dev/null 2>&1
+            pip install requests >/dev/null 2>&1
+        else
+            echo "警告: 未找到pip命令，跳过依赖库修复"
+            ERROR_LOG+=("[依赖修复] 未找到pip命令")
         fi
     fi
     
@@ -670,6 +788,18 @@ EOF
         fi
 
         echo "正在同步keystone数据库..."
+        # 在执行db_sync前再次检查依赖库兼容性
+        if ! python3 -c "import requests; import urllib3" 2>/dev/null; then
+            echo "警告: Python依赖库可能存在版本冲突，尝试修复..."
+            if command -v pip3 &> /dev/null; then
+                pip3 uninstall -y urllib3 chardet >/dev/null 2>&1
+                pip3 install requests >/dev/null 2>&1
+            elif command -v pip &> /dev/null; then
+                pip uninstall -y urllib3 chardet >/dev/null 2>&1
+                pip install requests >/dev/null 2>&1
+            fi
+        fi
+        
         if ! su -s /bin/sh -c "keystone-manage db_sync" keystone; then
             echo -e "\033[31m错误详情：$(mysql -u root -e \"SHOW ERRORS;\" 2>/dev/null)\033[0m"
             echo "警告: keystone数据库同步失败，请检查数据库连接和权限，继续执行"
@@ -797,6 +927,18 @@ EOF
             fi
         fi
 
+        # 再次检查Python依赖库兼容性
+        if ! python3 -c "import requests; import urllib3" 2>/dev/null; then
+            echo "警告: Python依赖库可能存在版本冲突，尝试修复..."
+            if command -v pip3 &> /dev/null; then
+                pip3 uninstall -y urllib3 chardet >/dev/null 2>&1
+                pip3 install requests >/dev/null 2>&1
+            elif command -v pip &> /dev/null; then
+                pip uninstall -y urllib3 chardet >/dev/null 2>&1
+                pip install requests >/dev/null 2>&1
+            fi
+        fi
+
         for i in {1..3}; do
             if keystone-manage bootstrap \
                 --bootstrap-password $ADMIN_PASS \
@@ -836,6 +978,9 @@ EOF
                 fi
             fi
         done
+    else
+        echo "警告: keystone-manage 命令未找到，继续执行"
+        ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
     fi
 
     # 删除重复的httpd启动代码，避免冲突
@@ -928,16 +1073,15 @@ if ! openstack token issue &> /dev/null; then
     ss -tuln | grep ':5000' || echo "端口5000未被监听"
     echo "警告: keystone bootstrap 失败，请检查/var/log/keystone/keystone.log，继续执行"
     ERROR_LOG+=("[keystone初始化] keystone bootstrap 失败")
+else
+    echo "警告: keystone-manage 命令未找到，继续执行"
+    ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
 fi
-    else
-        echo "警告: keystone-manage 命令未找到，继续执行"
-        ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
-    fi
-    
-    echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
-    ln -s /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/ 2>/dev/null || echo "警告: 创建符号链接失败"
-    systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
-    systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
+
+echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
+ln -s /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/ 2>/dev/null || echo "警告: 创建符号链接失败"
+systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
+systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
 
     cat > /etc/keystone/admin-openrc.sh << EOF
 export OS_PROJECT_DOMAIN_NAME=Default
@@ -1009,6 +1153,8 @@ if ! openstack token issue &> /dev/null; then
     else
         echo "无法找到keystone日志文件"
     fi
+    handle_error "glance服务依赖的keystone服务未就绪" "服务依赖检查"
+else
     echo "警告: glance服务依赖的keystone服务未就绪，继续执行"
     ERROR_LOG+=("[服务依赖检查] glance服务依赖的keystone服务未就绪")
 fi
@@ -1162,6 +1308,9 @@ if ! openstack token issue &> /dev/null; then
         echo "无法找到keystone日志文件"
     fi
     handle_error "placement服务依赖的keystone服务未就绪" "服务依赖检查"
+else
+    echo "警告: placement服务依赖的keystone服务未就绪，继续执行"
+    ERROR_LOG+=("[服务依赖检查] placement服务依赖的keystone服务未就绪")
 fi
 
 if command -v openstack &> /dev/null; then
