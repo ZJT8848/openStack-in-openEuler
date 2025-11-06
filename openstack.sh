@@ -285,7 +285,7 @@ echo "###############################################################"
 # 下载OpenStack Train Yum 源
 echo "配置OpenStack Train Yum源..."
 # 1. 卸载 wallaby 包（如果存在）
-#sudo dnf remove -y openstack-release-wallaby 2>/dev/null
+sudo dnf remove -y openstack-release-wallaby 2>/dev/null
 # 2. 安装 train 包
 if sudo dnf install -y openstack-release-train; then
     echo "OpenStack Train 源安装成功"
@@ -312,8 +312,8 @@ priority=1
 eof
 fi
 # 3. 清理缓存
-sudo dnf clean all
-sudo dnf makecache
+#sudo dnf clean all
+#sudo dnf makecache
 # 配置环境变量
 echo "配置环境变量..."
 cat > /root/openrc.sh << eof
@@ -646,8 +646,7 @@ EOF
                 --bootstrap-admin-url http://$HOST_IP:5000/v3/ \
                 --bootstrap-internal-url http://$HOST_IP:5000/v3/ \
                 --bootstrap-public-url http://$HOST_IP:5000/v3/ \
-                --bootstrap-region-id RegionOne
-                --debug; then
+                --bootstrap-region-id RegionOne; then
                 echo -e "\\033[32m✓ keystone bootstrap 成功\\033[0m"
                 break
             else
