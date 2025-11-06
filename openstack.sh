@@ -538,59 +538,16 @@ eof
         handle_error "keystone-manage 命令未找到" "keystone安装"
     fi
     
-    # 确保httpd配置中的ServerName使用IP地址
+    # 确保httpd配置中的ServerName使用主机名
     if grep -q "ServerName" /etc/httpd/conf/httpd.conf; then
-        sed -i "s/ServerName.*/ServerName $HOST_IP/" /etc/httpd/conf/httpd.conf
+        sed -i "s/ServerName.*/ServerName controller/" /etc/httpd/conf/httpd.conf
     else
-        echo "ServerName $HOST_IP" >> /etc/httpd/conf/httpd.conf
-    fi
-    
-    # 添加额外的ServerName配置以避免Apache警告
-    if ! grep -q "ServerName controller" /etc/httpd/conf/httpd.conf; then
         echo "ServerName controller" >> /etc/httpd/conf/httpd.conf
     fi
     
-    # 创建自定义keystone WSGI配置文件
-    cat > /etc/httpd/conf.d/wsgi-keystone.conf << EOF
-Listen 5000
-<VirtualHost *:5000>
-    WSGIDaemonProcess keystone-public processes=5 threads=1 user=keystone group=keystone display-name=%{GROUP}
-    WSGIProcessGroup keystone-public
-    WSGIScriptAlias / /usr/bin/keystone-wsgi-public
-    WSGIApplicationGroup %{GLOBAL}
-    WSGIPassAuthorization On
-    LimitRequestBody 114688
-    <IfVersion >= 2.4>
-      ErrorLogFormat "%{cu}t %M"
-    </IfVersion>
-    ErrorLog /var/log/httpd/keystone.log
-    CustomLog /var/log/httpd/keystone_access.log combined
-    <Directory /usr/bin>
-        <IfVersion >= 2.4>
-            Require all granted
-        </IfVersion>
-        <IfVersion < 2.4>
-            Order allow,deny
-            Allow from all
-        </IfVersion>
-    </Directory>
-</VirtualHost>
-Alias /identity /usr/bin/keystone-wsgi-public
-<Location /identity>
-    SetHandler wsgi-script
-    Options +ExecCGI
-    WSGIProcessGroup keystone-public
-    WSGIApplicationGroup %{GLOBAL}
-    WSGIPassAuthorization On
-</Location>
-EOF
-
-    # 确保日志文件存在且权限正确
-    mkdir -p /var/log/httpd
-    touch /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
-    chown keystone:keystone /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
-    chmod 644 /var/log/httpd/keystone.log /var/log/httpd/keystone_access.log
-
+    # 创建自定义keystone WSGI配置文件（使用官方推荐方式）
+    ln -sf /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/
+    
     systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
     systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
     
@@ -681,8 +638,8 @@ EOF
 
     # 增强服务验证机制
     echo "正在验证keystone服务可用性..."
-    MAX_RETRIES=5
-    WAIT_TIME=5
+    MAX_RETRIES=10
+    WAIT_TIME=10
         export OS_PROJECT_DOMAIN_NAME=Default
         export OS_USER_DOMAIN_NAME=Default
         export OS_PROJECT_NAME=admin
@@ -691,6 +648,18 @@ EOF
         export OS_AUTH_URL=http://$HOST_IP:5000/v3
         export OS_IDENTITY_API_VERSION=3
         export OS_IMAGE_API_VERSION=2
+
+        # 确保admin-openrc.sh文件正确生成
+        cat > /etc/keystone/admin-openrc.sh << EOF
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_NAME=admin
+export OS_USERNAME=admin
+export OS_PASSWORD=$ADMIN_PASS
+export OS_AUTH_URL=http://$HOST_IP:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_IMAGE_API_VERSION=2
+EOF
 
         for ((i=1; i<=MAX_RETRIES; i++)); do
             # 确保httpd服务已运行
@@ -740,7 +709,7 @@ EOF
                 # 显示占用5000端口的进程信息
                 if ss -tuln | grep ':5000' > /dev/null; then
                     echo "当前占用5000端口的进程:"
-                    lsof -i :5000 2>/dev/null || netstat -tlnp | grep :5000
+                    lsof -i :5000 2>/dev/null || echo "无法获取进程信息"
                 fi
                 
                 echo "检查httpd配置:"
@@ -770,8 +739,8 @@ EOF
         handle_error "keystone-manage 命令未找到" "keystone安装"
     fi
     
-    echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
-    ln -s /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/ 2>/dev/null || echo "警告: 创建符号链接失败"
+    echo "ServerName controller" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
+    ln -sf /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/ 2>/dev/null || echo "警告: 创建符号链接失败"
     systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
     systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
 
