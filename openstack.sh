@@ -361,8 +361,31 @@ EOF
 
     # 缓存服务安装
     yum install -y memcached python3-memcached || handle_error "Memcached安装失败" "基础服务安装"
-    sed -i -e 's/OPTIONS.*/OPTIONS="-l 127.0.0.1,::1,$HOST_NAME"/g' /etc/sysconfig/memcached || handle_error "Memcached配置修改失败" "基础服务安装"
-    systemctl enable --now memcached || handle_error "Memcached启动失败" "基础服务安装"
+    
+    # 修复Memcached服务配置和启动逻辑
+    echo "正在修复Memcached服务..."
+
+    # 确保配置文件修改正确
+    sed -i -e 's/^OPTIONS.*/OPTIONS="-l 127.0.0.1,::1,$HOST_NAME"/' /etc/sysconfig/memcached || handle_error "Memcached配置修改失败" "Memcached修复"
+
+    # 检查SELinux状态并处理
+    if getenforce | grep -q "Enforcing"; then
+        setenforce 0 || handle_error "SELinux设置失败" "Memcached修复"
+        echo "已临时将SELinux设置为宽容模式，请根据需要调整/etc/selinux/config"
+    fi
+
+    # 重新加载systemd配置
+    systemctl daemon-reload || handle_error "Systemd配置重载失败" "Memcached修复"
+
+    # 启用并启动Memcached服务
+    systemctl enable --now memcached || handle_error "Memcached服务启用失败" "Memcached修复"
+    systemctl restart memcached || handle_error "Memcached服务重启失败" "Memcached修复"
+
+    # 验证服务状态
+    systemctl is-active memcached > /dev/null || handle_error "Memcached服务未运行" "Memcached验证"
+    ss -tuln | grep ':11211' > /dev/null || handle_error "Memcached端口未监听" "Memcached验证"
+
+    echo "✓ Memcached服务修复完成"
 
     # 验证基础服务状态
     systemctl status mariadb > /dev/null || handle_error "MariaDB服务异常" "基础服务验证"
