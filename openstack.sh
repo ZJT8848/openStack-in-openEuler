@@ -287,29 +287,14 @@ echo "配置OpenStack Train Yum源..."
 # 1. 卸载 wallaby 包（如果存在）
 #sudo dnf remove -y openstack-release-wallaby 2>/dev/null
 # 2. 安装 train 包
-if sudo dnf install -y openstack-release-train; then
+if sudo yum install -y openstack-release-train; then
     echo "OpenStack Train 源安装成功"
 else
     echo "警告: OpenStack Train 源安装失败，尝试手动配置"
-    
+    sudo dnf remove -y openstack-release-wallaby 2>/dev/null
+    dnf install -y openstack-release-train
     # 手动配置repo文件
-    cat > /etc/yum.repos.d/openEuler.repo << eof
-[OpenStack_Train]
-name=OpenStack_Train
-baseurl=https://repo.openeuler.org/openEuler-22.03-LTS-SP4/EPOL/multi_version/OpenStack/Train/\$basearch/
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.openeuler.org/openEuler-22.03-LTS-SP4/OS/\$basearch/RPM-GPG-KEY-openEuler
-priority=1
-
-[OpenStack_Train_update]
-name=OpenStack_Train_update
-baseurl=https://repo.openeuler.org/openEuler-22.03-LTS-SP4/EPOL/update/multi_version/OpenStack/Train/\$basearch/
-enabled=1
-gpgcheck=1
-gpgkey=https://repo.openeuler.org/openEuler-22.03-LTS-SP4/OS/\$basearch/RPM-GPG-KEY-openEuler
-priority=1
-eof
+   
 fi
 # 3. 清理缓存
 sudo dnf clean all
@@ -538,20 +523,141 @@ eof
         handle_error "keystone-manage 命令未找到" "keystone安装"
     fi
     
-    # 确保httpd配置中的ServerName使用主机名
-    if grep -q "^ServerName" /etc/httpd/conf/httpd.conf; then
-        sed -i "s/^ServerName.*/ServerName $HOST_IP/" /etc/httpd/conf/httpd.conf
+    # 确保ServerName正确设置
+    if grep -q "ServerName" /etc/httpd/conf/httpd.conf; then
+        sed -i "s/^#ServerName.*/ServerName controller/" /etc/httpd/conf/httpd.conf
+        sed -i "s/^ServerName.*/ServerName controller/" /etc/httpd/conf/httpd.conf
     else
-        echo "ServerName $HOST_IP" >> /etc/httpd/conf/httpd.conf
+        echo "ServerName controller" >> /etc/httpd/conf/httpd.conf
     fi
     
-    # 重新启动httpd服务使配置生效
+    # 确保密码显示完整
+    ADMIN_PASS="000000"
+    export OS_PASSWORD=$ADMIN_PASS
+    
+    # 生成admin-openrc.sh文件时使用完整密码
+    cat > /etc/keystone/admin-openrc.sh << EOF
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_USER_DOMAIN_NAME=Default
+export OS_PROJECT_NAME=admin
+export OS_USERNAME=admin
+export OS_PASSWORD=$ADMIN_PASS
+export OS_AUTH_URL=http://$HOST_IP:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_IMAGE_API_VERSION=2
+EOF
+    
+    # 增加额外的诊断信息
+    echo "检查/var/log/keystone/keystone.log内容："
+    if [ -f /var/log/keystone/keystone.log ]; then
+        tail -n 20 /var/log/keystone/keystone.log
+    else
+        echo "无法找到keystone日志文件"
+    fi
+    
+    # 检查httpd错误日志
+    echo "检查/var/log/httpd/error_log内容："
+    if [ -f /var/log/httpd/error_log ]; then
+        tail -n 20 /var/log/httpd/error_log
+    else
+        echo "无法找到httpd错误日志文件"
+    fi
+    
+    # 添加memcached状态检查
+    echo "检查memcached服务状态："
+    systemctl status memcached || echo "memcached服务未运行"
+    
+    # 确保所有相关服务都已启动
+    for service in httpd memcached; do
+        if systemctl is-active --quiet $service; then
+            echo "$service 服务正在运行"
+        else
+            echo "$service 服务未运行，尝试启动..."
+            systemctl start $service 2>/dev/null || echo "警告: $service 服务启动失败"
+        fi
+    done
+    
+    # 检查端口监听情况
+    echo "检查5000端口监听情况："
+    ss -tuln | grep ':5000' || echo "端口5000未被监听"
+    
+    # 显示当前环境变量
+    echo "当前完整的环境变量设置："
+    env | grep -E 'OS_|HOST_' || echo "未找到相关环境变量"
+    
+    # 增加调试curl请求
+    echo "尝试手动curl测试keystone服务："
+    curl -v -X POST \
+         -H "Content-Type: application/json" \
+         -d '{
+            "auth": {
+                "identity": {
+                    "methods": ["password"],
+                    "password": {
+                        "user": {
+                            "name": "admin",
+                            "domain": { "id": "default" },
+                            "password": "000000"
+                        }
+                    }
+                },
+                "scope": {
+                    "project": {
+                        "name": "admin",
+                        "domain": { "id": "default" }
+                    }
+                }
+            }
+        }' \
+         http://$HOST_IP:5000/v3/auth/tokens || echo "警告: curl请求失败"
+
+    # 确保日志目录存在
+    mkdir -p /var/log/keystone
+    chown -R keystone:keystone /var/log/keystone
+    chmod 750 /var/log/keystone
+
+    # 确保日志配置正确
+    if grep -q '^log_dir' /etc/keystone/keystone.conf; then
+        sed -i 's|^log_dir.*|log_dir = /var/log/keystone|' /etc/keystone/keystone.conf
+    else
+        echo "[DEFAULT]" >> /etc/keystone/keystone.conf
+        echo "log_dir = /var/log/keystone" >> /etc/keystone/keystone.conf
+    fi
+
+    # 确保日志文件存在
+    touch /var/log/keystone/keystone.log
+    chown keystone:keystone /var/log/keystone/keystone.log
+    chmod 640 /var/log/keystone/keystone.log
+    
+    # 检查防火墙状态
+    echo "检查防火墙状态："
+    firewall-cmd --state || echo "firewalld未运行"
+    
+    # 显示SELinux状态
+    echo "检查SELinux状态："
+    getenforce || echo "无法获取SELinux状态"
+    
+    # 检查httpd进程权限
+    echo "检查httpd进程权限："
+    ps aux | grep httpd || echo "无法获取httpd进程信息"
+    
+    # 检查keystone数据库连接
+    echo "检查keystone数据库连接："
+    mysql -h $HOST_IP -ukeystone -p$KEYSTONE_DBPASS -e "SHOW DATABASES;" 2>/dev/null || echo "数据库连接失败"
+    
+    # 检查wsgi配置文件
+    echo "检查wsgi配置文件："
+    if [ -f /usr/share/keystone/wsgi-keystone.conf ]; then
+        cat /usr/share/keystone/wsgi-keystone.conf
+    else
+        echo "wsgi配置文件不存在"
+    fi
+    
+    # 创建自定义keystone WSGI配置文件（使用官方推荐方式）
+    ln -sf /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/
+    
+    systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
     systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
-    
-    # 检查并确保符号链接正确创建
-    if [ ! -L /etc/httpd/conf.d/wsgi-keystone.conf ]; then
-        ln -sf /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/
-    fi
     
     keystone-manage credential_setup --keystone-user keystone --keystone-group keystone || \
             handle_error "keystone credential 设置失败" "keystone初始化"
@@ -676,7 +782,7 @@ EOF
             echo "调试信息 - 当前环境变量:"
             echo "OS_AUTH_URL=$OS_AUTH_URL"
             echo "OS_USERNAME=$OS_USERNAME"
-            echo "OS_PASSWORD=$ADMIN_PASS"  # 显示完整密码
+            echo "OS_PASSWORD=${ADMIN_PASS:0:3}***"  # 隐藏部分密码
             
             if openstack token issue &> /dev/null; then
                 echo -e "\\033[32m✓ keystone服务验证成功\\033[0m"
@@ -692,20 +798,14 @@ EOF
                 
                 # 检查keystone日志
                 if [ -f /var/log/keystone/keystone.log ]; then
-                    echo -e "\\033[31m最近10行keystone错误日志：\\033[0m"
-                    grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 10
+                    echo -e "\\033[31m最近5行错误日志：\\033[0m"
+                    grep -i 'error\|exception' /var/log/keystone/keystone.log | tail -n 5
                 fi
                 
                 # 检查httpd错误日志
                 if [ -f /var/log/httpd/error_log ]; then
-                    echo -e "\\033[31mhttpd最近10行错误日志：\\033[0m"
-                    grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 10
-                fi
-                
-                # 检查访问日志
-                if [ -f /var/log/httpd/keystone_access.log ]; then
-                    echo -e "\\033[33m最近10行访问日志：\\033[0m"
-                    tail -n 10 /var/log/httpd/keystone_access.log
+                    echo -e "\\033[31mhttpd最近5行错误日志：\\033[0m"
+                    grep -i 'error\|keystone' /var/log/httpd/error_log | tail -n 5
                 fi
             fi
             
@@ -727,39 +827,6 @@ EOF
                     echo "检查keystone配置文件关键内容:"
                     grep -E "(^connection|^provider)" /etc/keystone/keystone.conf
                 fi
-                
-                # 添加手动curl测试
-                echo "尝试手动获取token进行调试:"
-                curl -i \
-                  -H "Content-Type: application/json" \
-                  -d '
-                {
-                    "auth": {
-                        "identity": {
-                            "methods": [
-                                "password"
-                            ],
-                            "password": {
-                                "user": {
-                                    "name": "admin",
-                                    "domain": {
-                                        "name": "Default"
-                                    },
-                                    "password": "$ADMIN_PASS"
-                                }
-                            }
-                        },
-                        "scope": {
-                            "project": {
-                                "name": "admin",
-                                "domain": {
-                                    "name": "Default"
-                                }
-                            }
-                        }
-                    }
-                }' \
-                http://$HOST_IP:5000/v3/auth/tokens 2>&1 || echo "curl请求失败"
             fi
         done
 
@@ -1130,6 +1197,20 @@ if ! openstack token issue &> /dev/null; then
     fi
     handle_error "nova服务依赖的keystone服务未就绪" "服务依赖检查"
 fi
+
+# 确保openstack客户端已安装
+    if ! yum list installed python3-openstackclient &>/dev/null; then
+        echo "正在安装openstack客户端..."
+        yum install -y python3-openstackclient || handle_error "python3-openstackclient 安装失败" "客户端安装"
+    else
+        echo "✓ openstack客户端已安装"
+    fi
+    
+    # 验证openstack命令是否可用
+    if ! command -v openstack &>/dev/null; then
+        echo -e "\\033[31m错误: openstack命令未找到，即使已安装python3-openstackclient\\033[0m"
+        handle_error "openstack命令不可用，请检查python3-openstackclient安装" "客户端验证"
+    fi
 
 # 检查数据库是否可用
 if command -v mysql &> /dev/null; then
