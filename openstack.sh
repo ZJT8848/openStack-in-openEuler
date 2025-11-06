@@ -401,6 +401,10 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
         cp /etc/keystone/keystone.conf{,.bak}
     fi
 
+    # 确保关键变量纯净（修复配置文件生成错误）
+    HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r')
+    KEYSTONE_DBPASS=$(echo "$KEYSTONE_DBPASS" | tr -d '\\n\\r')
+        
     cat > /etc/keystone/keystone.conf << eof
 [DEFAULT]
 log_dir = /var/log/keystone
