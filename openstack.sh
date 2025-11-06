@@ -455,7 +455,7 @@ if yum install -y openstack-keystone httpd mod_wsgi; then
     if ! [[ "$HOST_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         handle_error "无效的HOST_IP地址格式: $HOST_IP" "配置生成"
     fi
-    [auth]
+#    [auth]
 #methods = password,token
 #password = keystone.auth.plugins.password.Password  # 替换<PASSWORD>
 #token = keystone.auth.plugins.token.Token          # 替换<TOKEN>
