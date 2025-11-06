@@ -47,8 +47,8 @@ get_host_ip() {
         return 1
     fi
 
-    # 获取所有非回环IPv4地址（使用更健壮的提取方式）
-    local ips=($(ip -4 addr show | grep -E 'inet\\s' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1))
+    # 获取所有非回环IPv4地址（使用最健壮的提取方式）
+    local ips=($(ip -4 addr show | grep -Eo 'inet\\s+[0-9.]+' | awk '{print $2}' | cut -d/ -f1 | grep -v '^127\\.0\\.0\\.1$'))
     
     local count=${#ips[@]}
     
@@ -76,9 +76,9 @@ get_host_ip() {
     fi
 }
 
-# 安全调用IP检测函数（修复全局作用域local错误）
+# 安全调用IP检测函数（彻底移除全局作用域local）
 if ! HOST_IP=$(get_host_ip 2>&1); then
-    # 修复：移除local（全局作用域不能使用local）
+    # 全局作用域必须使用普通变量赋值
     error_msg=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
     handle_error "IP检测失败: $error_msg" "IP检测"
 fi
@@ -86,9 +86,12 @@ fi
 # 双重清理确保HOST_IP纯净
 HOST_IP=$(echo "$HOST_IP" | tr -d '\\n\\r' | tr -cd '[:print:]')
 
-# 验证HOST_IP是否为有效IP格式
+# 验证HOST_IP是否为有效IP格式（添加详细错误诊断）
 if ! [[ "$HOST_IP" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
-    handle_error "检测到的IP格式无效: $HOST_IP" "IP验证"
+    echo -e "\\033[31m错误详情：检测到的IP格式无效: '$HOST_IP'\\033[0m"
+    echo -e "\\033[33m当前IP检测输出：\\033[0m"
+    ip -4 addr show
+    handle_error "IP格式验证失败" "IP验证"
 fi
 
 NETWORK=$(echo $HOST_IP | awk -F. '{print $1"."$2"."$3".0/24"}')
