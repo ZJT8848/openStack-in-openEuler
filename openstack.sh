@@ -42,21 +42,23 @@ exec 2> >(while read line; do echo -e "\033[33m警告: $line\033[0m"; done)
 # 自动获取本机IP地址
 get_host_ip() {
     # 获取所有非回环IPv4地址
-    local ips=($(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '^127\\.0\\.0\\.1$'))
+    local ips=($(ip -4 addr show | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' | grep -v '^127\\.0\\.0\\.1$'))
     local count=${#ips[@]}
 
     if [ $count -eq 0 ]; then
         handle_error "未检测到有效IPv4地址，请检查网络配置" "IP检测"
     elif [ $count -eq 1 ]; then
-        echo "${ips[0]}" | tr -d '\n\r'  # 清理换行符
+        # 使用printf确保无换行符
+        printf '%s' "${ips[0]}"
     else
-        echo -e "\n检测到多个网络接口，请选择要使用的IP地址："
+        echo -e "\\n检测到多个网络接口，请选择要使用的IP地址："
         for i in "${!ips[@]}"; do
             echo "  [$i] ${ips[$i]}"
         done
         read -p "请输入序号: " index
         if [[ $index =~ ^[0-9]+$ ]] && [ $index -lt $count ]; then
-            echo "${ips[$index]}" | tr -d '\n\r'  # 清理换行符
+            # 使用printf确保无换行符
+            printf '%s' "${ips[$index]}"
         else
             handle_error "无效的序号选择" "IP选择"
         fi
@@ -192,14 +194,20 @@ fi
 # 遍历所有节点（如果有sshpass）
 if which sshpass &> /dev/null; then
     for node in "${NODES[@]}"; do
-        ip=$(echo "$node" | awk '{print $1}' | tr -d '\n\r')
-        hostname=$(echo "$node" | awk '{print $2}' | tr -d '\n\r')
+        ip=$(echo "$node" | awk '{print $1}' | tr -d '\\n\\r')
+        hostname=$(echo "$node" | awk '{print $2}' | tr -d '\\n\\r')
 
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
 
-        # 修复：使用引号包裹hostname，避免空格问题
-        sshpass -p "$HOST_PASS" ssh-copy-id -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa.pub "$hostname" || \
-            echo -e "\033[31m错误详情：SSH密钥复制到 $hostname 失败，请检查网络连接和密码\033[0m"
+        # 修复：确保主机名是有效格式
+        if [[ ! "$hostname" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+            echo -e "\\033[31m错误详情：无效的主机名格式 '$hostname'，应为字母数字和点连字符组合\\033[0m"
+            continue
+        fi
+
+        # 修复：使用IP地址作为主机标识
+        sshpass -p "$HOST_PASS" ssh-copy-id -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa.pub "$ip" || \
+            echo -e "\\033[31m错误详情：SSH密钥复制到 $hostname ($ip) 失败，请检查网络连接和密码\\033[0m"
 
         if [[ $? -eq 0 ]]; then
             echo "$(date '+%Y-%m-%d %H:%M:%S') - 成功复制SSH密钥到节点 $hostname ($ip)" >> "$LOG_FILE"
@@ -465,6 +473,43 @@ eof
         keystone-manage credential_setup --keystone-user keystone --keystone-group keystone || \
             handle_error "keystone credential 设置失败" "keystone初始化"
 
+        # 确保httpd服务启动
+        MAX_RETRIES=3
+        WAIT_TIME=5
+        for ((i=1; i<=MAX_RETRIES; i++)); do
+            systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
+            systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
+            
+            if systemctl is-active --quiet httpd; then
+                echo -e "\\033[32m✓ httpd 服务已启动\\033[0m"
+                break
+            else
+                echo -e "\\033[33m警告: httpd 服务未运行 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\\033[0m"
+                sleep $WAIT_TIME
+                
+                # 检查5000端口占用情况
+                if ss -tuln | grep ':5000' > /dev/null; then
+                    echo -e "\\033[31m错误: 端口5000已被占用，请检查冲突服务\\033[0m"
+                fi
+                
+                # 检查httpd错误日志
+                if [ -f /var/log/httpd/error_log ]; then
+                    echo -e "\\033[31mhttpd 最近10行错误日志：\\033[0m"
+                    tail -n 10 /var/log/httpd/error_log
+                fi
+            fi
+        done
+
+        # 如果最终服务仍未运行
+        if ! systemctl is-active --quiet httpd; then
+            # 检查错误日志
+            if [ -f /var/log/httpd/error_log ]; then
+                echo -e "\\033[31mhttpd 详细错误日志：\\033[0m"
+                tail -n 20 /var/log/httpd/error_log
+            fi
+            handle_error "httpd 服务无法启动，请检查Apache配置和日志" "服务启动"
+        fi
+
         # 增强bootstrap错误处理
         echo "正在执行keystone bootstrap..."
         for i in {1..3}; do
@@ -474,20 +519,20 @@ eof
                 --bootstrap-internal-url http://$HOST_NAME:5000/v3/ \
                 --bootstrap-public-url http://$HOST_NAME:5000/v3/ \
                 --bootstrap-region-id RegionOne; then
-                echo -e "\033[32m✓ keystone bootstrap 成功\033[0m"
+                echo -e "\\033[32m✓ keystone bootstrap 成功\\033[0m"
                 break
             else
-                echo -e "\033[33m警告: keystone bootstrap 尝试 $i 失败，3秒后重试...\033[0m"
+                echo -e "\\033[33m警告: keystone bootstrap 尝试 $i 失败，3秒后重试...\\033[0m"
                 sleep 3
                 
                 # 检查5000端口占用情况
                 if ss -tuln | grep ':5000' > /dev/null; then
-                    echo -e "\033[31m错误: 端口5000已被占用，请检查冲突服务\033[0m"
+                    echo -e "\\033[31m错误: 端口5000已被占用，请检查冲突服务\\033[0m"
                 fi
                 
                 # 检查keystone日志
                 if [ -f /var/log/keystone/keystone.log ]; then
-                    echo -e "\033[31m最近5行错误日志：\033[0m"
+                    echo -e "\\033[31m最近5行错误日志：\\033[0m"
                     grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
                 fi
             fi
@@ -498,21 +543,29 @@ eof
         MAX_RETRIES=5
         WAIT_TIME=5
         for ((i=1; i<=MAX_RETRIES; i++)); do
+            # 确保httpd服务已运行
+            if ! systemctl is-active --quiet httpd; then
+                echo -e "\\033[31m错误: httpd 服务未运行，请检查Apache状态\\033[0m"
+                # 尝试重新启动httpd
+                systemctl restart httpd 2>/dev/null || echo "警告: httpd 服务重启失败"
+                sleep 3
+            fi
+            
             if openstack token issue &> /dev/null; then
-                echo -e "\033[32m✓ keystone服务验证成功\033[0m"
+                echo -e "\\033[32m✓ keystone服务验证成功\\033[0m"
                 break
             else
-                echo -e "\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\033[0m"
+                echo -e "\\033[33m警告: keystone服务验证失败 (尝试 $i/$MAX_RETRIES)，等待 $WAIT_TIME 秒后重试...\\033[0m"
                 sleep $WAIT_TIME
                 
                 # 检查服务状态
                 if ! systemctl is-active --quiet httpd; then
-                    echo -e "\033[31m错误: httpd 服务未运行，请检查Apache状态\033[0m"
+                    echo -e "\\033[31m错误: httpd 服务未运行，请检查Apache状态\\033[0m"
                 fi
                 
                 # 检查keystone日志
                 if [ -f /var/log/keystone/keystone.log ]; then
-                    echo -e "\033[31m最近5行错误日志：\033[0m"
+                    echo -e "\\033[31m最近5行错误日志：\\033[0m"
                     grep -i 'error' /var/log/keystone/keystone.log | tail -n 5
                 fi
             fi
@@ -520,7 +573,7 @@ eof
 
         # 如果最终验证失败
         if ! openstack token issue &> /dev/null; then
-            echo -e "\033[31m详细错误日志：\033[0m"
+            echo -e "\\033[31m详细错误日志：\\033[0m"
             if [ -f /var/log/keystone/keystone.log ]; then
                 tail -n 20 /var/log/keystone/keystone.log
             else
