@@ -790,7 +790,6 @@ bash /root/fix-nova-cells.sh
 echo ""
 echo "###############################################################"
 echo "OpenStack安装和配置修复完成！"
-#echo "可以通过 http://$HOST_IP/dashboard/auth/login 登录"
 echo "可以通过 http://$HOST_IP/dashboard 登录"
 echo "用户名: admin"
 echo "密码: $ADMIN_PASS"
