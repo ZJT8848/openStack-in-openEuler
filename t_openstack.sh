@@ -227,12 +227,9 @@ yum install -y memcached python3-memcached
 sed -i -e "s/OPTIONS=.*/OPTIONS=\"-l 127.0.0.1,::1,$HOST_NAME\"/g" /etc/sysconfig/memcached
 systemctl enable --now memcached
 
-echo "✅ MariaDB、RabbitMQ、Memcached 安装并验证成功"
-EOF
-
-    chmod +x /root/iaas-install-mysql.sh
-    bash /root/iaas-install-mysql.sh
-'
+chmod +x /root/iaas-install-mysql.sh
+bash /root/iaas-install-mysql.sh
+echo "✅ MariaDB、RabbitMQ、Memcached 安装成功"
 
 # --- Keystone 安装 ---
 run_step "安装 Keystone 身份认证服务" bash -c '
@@ -283,11 +280,10 @@ source /etc/keystone/admin-openrc.sh
 yum install -y python3-openstackclient
 openstack project create --domain default --description "Service Project" service
 openstack token issue
-EOF
 
-    chmod +x /root/iaas-install-keystone.sh
-    bash /root/iaas-install-keystone.sh
-'
+chmod +x /root/iaas-install-keystone.sh
+bash /root/iaas-install-keystone.sh
+echo "✅ Keystone 安装成功"
 
 # --- Glance 安装 ---
 run_step "安装 Glance 镜像服务" bash -c '
@@ -332,11 +328,10 @@ eoff
 
 su -s /bin/sh -c "glance-manage db_sync" glance
 systemctl enable --now openstack-glance-api.service
-EOF
 
-    chmod +x /root/iaas-install-glance.sh
-    bash /root/iaas-install-glance.sh
-'
+chmod +x /root/iaas-install-glance.sh
+bash /root/iaas-install-glance.sh
+echo "✅ Glance 安装成功"
 
 # --- Placement 安装 ---
 run_step "安装 Placement 资源跟踪服务" bash -c '
@@ -376,11 +371,10 @@ eoff
 
 su -s /bin/sh -c "placement-manage db sync" placement
 systemctl restart httpd
-EOF
 
-    chmod +x /root/iaas-install-placement.sh
-    bash /root/iaas-install-placement.sh
-'
+chmod +x /root/iaas-install-placement.sh
+bash /root/iaas-install-placement.sh
+echo "✅ Placement 安装成功"
 
 # --- Nova 安装 ---
 run_step "安装 Nova 计算服务" bash -c '
@@ -478,11 +472,10 @@ systemctl restart openstack-nova-api openstack-nova-scheduler openstack-nova-con
 EOF2
 chmod +x /root/nova-service-restart.sh
 bash /root/nova-service-restart.sh
-EOF
 
-    chmod +x /root/iaas-install-nova-controller.sh
-    bash /root/iaas-install-nova-controller.sh
-'
+chmod +x /root/iaas-install-nova-controller.sh
+bash /root/iaas-install-nova-controller.sh
+echo "✅ Nova 安装成功"
 
 # --- Neutron 安装 ---
 run_step "安装 Neutron 网络服务" bash -c '
@@ -622,11 +615,10 @@ systemctl restart neutron-server.service neutron-linuxbridge-agent.service neutr
 EOF2
 chmod +x /root/neutron-service-restart.sh
 bash /root/neutron-service-restart.sh
-EOF
 
-    chmod +x /root/iaas-install-neutron-controller.sh
-    bash /root/iaas-install-neutron-controller.sh
-'
+chmod +x /root/iaas-install-neutron-controller.sh
+bash /root/iaas-install-neutron-controller.sh
+echo "✅ Neutron 安装成功"
 
 # --- Horizon 安装 ---
 run_step "安装 Horizon Web 控制台" bash -c '
@@ -664,11 +656,10 @@ EOFF
 sed -i "147s/.*/TIME_ZONE = '\''Asia\/Shanghai'\''/" /etc/openstack-dashboard/local_settings
 
 systemctl restart httpd memcached
-EOF
 
-    chmod +x /root/iaas-install-horizon.sh
-    bash /root/iaas-install-horizon.sh
-'
+chmod +x /root/iaas-install-horizon.sh
+bash /root/iaas-install-horizon.sh
+echo "✅ Horizon 安装成功"
 
 # ==============================
 # 最终总结
