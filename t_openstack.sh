@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # ==============================
-# OpenStack Train All-in-One 自动化部署脚本（带进度提示 + 中文错误汇总）
-# 适配 openEuler / CentOS 7/8/9
+# 脚本作者： ZJT8848,链接： https://github.com/ZJT8848/openStack-in-openEuler
+# 部分代码来源：作者 huhy,链接： https://www.cnblogs.com/hoyeong/p/18793119
+# OpenStack Train All-in-One 自动化部署脚本
+# 理论上适配 openEuler / CentOS 7/8/9
+# OpenStack22.02 LTS SP4实测脚本没问题
 # ==============================
 
 # --- 配置区 ---
@@ -789,7 +792,7 @@ echo "再通过 http://$HOST_IP/dashboard 进入仪表盘"
 echo "用户名: admin"
 echo "密码: $ADMIN_PASS"
 echo "脚本作者： ZJT8848,链接： https://github.com/ZJT8848/openStack-in-openEuler"
-echo "部分代码来源：作者 huhy,链接 https://www.cnblogs.com/hoyeong/p/18793119"
+echo "部分代码来源：作者 huhy,链接： https://www.cnblogs.com/hoyeong/p/18793119"
 echo "###############################################################"
 if [ ${#ERRORS[@]} -eq 0 ]; then
     echo "✅ 所有组件安装成功！"
