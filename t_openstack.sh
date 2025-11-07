@@ -1,63 +1,15 @@
-#!/bin/bash
-
-# ==========================================================================
+# ==========================================================================#
 # 脚本作者： ZJT8848,链接：https://github.com/ZJT8848/openStack-in-openEuler
 # 部分代码来源：作者 huhy,链接：https://www.cnblogs.com/hoyeong/p/18793119
 # OpenStack In OpenEuler 自动化部署脚本
-# 理论上适配 openEuler20/22/  /  CentOS 7/8/9
+# 理论上适配 openEuler20/22/ / CentOS 7/8/9
 # OpenStack22.02 LTS SP4实测脚本没问题
-# ==========================================================================
-
+# ==========================================================================#
 
 # --- 配置区 ---
-# --- 更换为阿里云 Yum 源 ---
-run_step "配置阿里云 Yum 源" bash -c '
-# 备份原始 repo 文件
-mkdir -p /etc/yum.repos.d/bak
-mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/bak/ 2>/dev/null || true
-
-# 根据系统发行版自动选择阿里云源
-OS_RELEASE=$(grep "^ID=" /etc/os-release | cut -d"=" -f2 | tr -d "\"")
-OS_VERSION=$(grep "^VERSION_ID=" /etc/os-release | cut -d"=" -f2 | tr -d "\"")
-
-case "$OS_RELEASE" in
-  "centos"|"rocky"|"almalinux")
-    if [[ "$OS_VERSION" =~ ^8 ]]; then
-      curl -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-vault-8.5.2111.repo
-      sed -i "s/mirrorlist/#mirrorlist/g" /etc/yum.repos.d/CentOS-Base.repo
-      sed -i "s|#baseurl=http://mirror.centos.org|baseurl=https://mirrors.aliyun.com|g" /etc/yum.repos.d/CentOS-Base.repo
-    elif [[ "$OS_VERSION" =~ ^7 ]]; then
-      curl -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-7.repo
-    else
-      echo "不支持的 CentOS 版本: $OS_VERSION"
-      exit 1
-    fi
-    ;;
-  "openeuler")
-    if [[ "$OS_VERSION" =~ ^20 ]]; then
-      curl -o /etc/yum.repos.d/openEuler.repo https://mirrors.aliyun.com/openeuler/20.03_LTS/OS/aarch64/openEuler.repo
-    elif [[ "$OS_VERSION" =~ ^22 ]]; then
-      curl -o /etc/yum.repos.d/openEuler.repo https://mirrors.aliyun.com/openeuler/22.03_LTS/OS/x86_64/openEuler.repo
-    elif [[ "$OS_VERSION" =~ ^24 ]]; then
-      curl -o /etc/yum.repos.d/openEuler.repo https://mirrors.aliyun.com/openeuler/24_LTS/OS/x86_64/openEuler.repo
-    else
-      echo "不支持的 openEuler 版本: $OS_VERSION"
-      exit 1
-    fi
-    ;;
-  *)
-    echo "未知系统: $OS_RELEASE，跳过更换源"
-    ;;
-esac
-
-# 清理并重建缓存
-yum clean all
-yum makecache
-'
 # 自动获取网络配置信息
 echo "正在检测网络接口..."
 INTERFACES=($(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|ens|eno|enp|wlan)' | head -10))
-
 if [ ${#INTERFACES[@]} -eq 0 ]; then
     echo "未找到有效的网络接口"
     exit 1
@@ -68,9 +20,8 @@ else
     echo "发现多个网络接口:"
     for i in "${!INTERFACES[@]}"; do
         IP_ADDR=$(ip -o -4 addr show dev ${INTERFACES[$i]} | awk '{print $4}' | cut -d'/' -f1)
-        echo "  [$i] ${INTERFACES[$i]} (${IP_ADDR:-无IP})"
+        echo " [$i] ${INTERFACES[$i]} (${IP_ADDR:-无IP})"
     done
-    
     while true; do
         echo -n "请选择要使用的网络接口 (0-$(( ${#INTERFACES[@]} - 1 ))): "
         read choice
@@ -93,10 +44,7 @@ if [ -z "$HOST_IP" ] || [ -z "$NETMASK" ]; then
     exit 1
 fi
 
-# 计算网络地址（不依赖ipcalc）
-
-IFS=. read -r i1 i2 i3 i4 <<< "$HOST_IP"
-# === 替换从 IFS 到 NETWORK_BASE 的部分 ===
+# 计算网络地址（使用查表法，避免 << 高亮问题）
 IFS=. read -r i1 i2 i3 i4 <<< "$HOST_IP"
 
 # 子网掩码表（0~32）
@@ -113,35 +61,25 @@ MASKS=(
 
 mask_str="${MASKS[$NETMASK]}"
 IFS=. read -r m1 m2 m3 m4 <<< "$mask_str"
+NETWORK_BASE="$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).$((i4 & m4))"
+TIME_SERVER_IP="$NETWORK_BASE/$NETMASK"
 
-NETWORK_BASE="$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).$((i4 & m4))"
-TIME_SERVER_IP="$NETWORK_BASE/$NETMASK"
-IFS=. read -r m1 m2 m3 m4 <<< "$((MASK >> 24 & 0xff)).$((MASK >> 16 & 0xff)).$((MASK >> 8 & 0xff)).$((MASK & 0xff))"
-NETWORK_BASE="$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).$((i4 & m4))"
-TIME_SERVER_IP="$NETWORK_BASE/$NETMASK"
 HOST_NAME="controller"
-NODES=("$HOST_IP controller")
+NODES=("$HOST_IP $HOST_NAME")
 HOST_PASS="000000"
-TIME_SERVER="controller"
-
+TIME_SERVER="$HOST_NAME"
 LOG_FILE="/root/init.log"
-ERRORS=()  # 用于收集错误步骤
+ERRORS=()
 
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "$LOG_FILE"
-}
-
-error() {
-    ERRORS+=("$1")
-    log "⚠️ 错误: $1"
-}
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "$LOG_FILE"; }
+error() { ERRORS+=("$1"); log "⚠️ 错误: $1"; }
 
 # --- 欢迎界面 ---
 cat > /etc/motd <<EOF
- ################################
- #    Welcome  to  openstack    #
- #  https://github.com/ZJT8848  #
- ################################
+################################
+# Welcome to openstack #
+# https://github.com/ZJT8848 #
+################################
 EOF
 
 # ==============================
@@ -157,6 +95,30 @@ run_step() {
         error "$step_name 执行失败"
     fi
 }
+
+# --- 更新 /etc/hosts ---
+run_step "更新 /etc/hosts" bash -c "
+    # 删除旧的 controller 条目
+    grep -v 'controller' /etc/hosts > /tmp/hosts.tmp && mv /tmp/hosts.tmp /etc/hosts
+    # 添加正确格式
+    echo '$HOST_IP $HOST_NAME' >> /etc/hosts
+"
+
+# --- 设置主机名 ---
+run_step "设置主机名" bash -c "
+    current_ip=\$(hostname -I | awk '{print \$1}')
+    for node in ${NODES[@]}; do
+        ip=\$(echo \"\$node\" | awk '{print \$1}')
+        hostname=\$(echo \"\$node\" | awk '{print \$2}')
+        if [[ \"\$current_ip\" == \"\$ip\" ]]; then
+            if [[ \"\$(hostname)\" != \"\$hostname\" ]]; then
+                hostnamectl set-hostname \"\$hostname\"
+                echo \"Hostname set to \$hostname\"
+            fi
+            break
+        fi
+    done
+"
 
 # --- 禁用 SELinux ---
 run_step "禁用 SELinux" bash -c '
