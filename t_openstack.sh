@@ -6,12 +6,56 @@
 # ==============================
 
 # --- 配置区 ---
-NODES=("192.168.1.204 controller")
+# 自动获取网络配置信息
+echo "正在检测网络接口..."
+INTERFACES=($(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|ens|eno|enp|wlan)' | head -10))
+
+if [ ${#INTERFACES[@]} -eq 0 ]; then
+    echo "未找到有效的网络接口"
+    exit 1
+elif [ ${#INTERFACES[@]} -eq 1 ]; then
+    SELECTED_INTERFACE=${INTERFACES[0]}
+    echo "发现一个网络接口: $SELECTED_INTERFACE"
+else
+    echo "发现多个网络接口:"
+    for i in "${!INTERFACES[@]}"; do
+        IP_ADDR=$(ip -o -4 addr show dev ${INTERFACES[$i]} | awk '{print $4}' | cut -d'/' -f1)
+        echo "  [$i] ${INTERFACES[$i]} (${IP_ADDR:-无IP})"
+    done
+    
+    while true; do
+        echo -n "请选择要使用的网络接口 (0-$(( ${#INTERFACES[@]} - 1 ))): "
+        read choice
+        if [[ $choice =~ ^[0-9]+$ ]] && [ $choice -ge 0 ] && [ $choice -lt ${#INTERFACES[@]} ]; then
+            SELECTED_INTERFACE=${INTERFACES[$choice]}
+            break
+        else
+            echo "无效选择，请重新输入"
+        fi
+    done
+fi
+
+# 获取选定接口的IP地址和网络信息
+HOST_IP=$(ip -o -4 addr show dev $SELECTED_INTERFACE | awk '{print $4}' | cut -d'/' -f1)
+INTERFACE_NAME=$SELECTED_INTERFACE
+NETMASK=$(ip -o -4 addr show dev $SELECTED_INTERFACE | awk '{print $4}' | cut -d'/' -f2)
+
+if [ -z "$HOST_IP" ] || [ -z "$NETMASK" ]; then
+    echo "无法获取选定接口 $SELECTED_INTERFACE 的IP地址或子网掩码"
+    exit 1
+fi
+
+# 计算网络地址（不依赖ipcalc）
+IFS=. read -r i1 i2 i3 i4 <<< "$HOST_IP"
+MASK=$((0xffffffff << (32 - NETMASK)))
+IFS=. read -r m1 m2 m3 m4 <<< "$((MASK >> 24 & 0xff)).$((MASK >> 16 & 0xff)).$((MASK >> 8 & 0xff)).$((MASK & 0xff))"
+NETWORK_BASE="$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).$((i4 & m4))"
+TIME_SERVER_IP="$NETWORK_BASE/$NETMASK"
+
+HOST_NAME="controller"
+NODES=("$HOST_IP controller")
 HOST_PASS="000000"
 TIME_SERVER="controller"
-TIME_SERVER_IP="192.168.1.0/24"
-HOST_IP="192.168.1.204"
-HOST_NAME="controller"
 
 LOG_FILE="/root/init.log"
 ERRORS=()  # 用于收集错误步骤
@@ -151,7 +195,7 @@ NOVA_PASS=$HOST_PASS
 NEUTRON_DBPASS=$HOST_PASS
 NEUTRON_PASS=$HOST_PASS
 METADATA_SECRET=$HOST_PASS
-INTERFACE_NAME=ens33
+INTERFACE_NAME=$INTERFACE_NAME
 Physical_NAME=provider
 minvlan=1
 maxvlan=1000
@@ -650,6 +694,89 @@ EOF
 
 chmod +x /root/iaas-install-horizon.sh
 run_step "安装 Horizon Web 控制台" /root/iaas-install-horizon.sh
+
+# 添加您指定的命令
+sudo mkdir -p /etc/openstack-dashboard
+echo "SITE_URL = '/dashboard/'" | sudo tee /etc/openstack-dashboard/local_settings.py
+echo -e "SITE_URL = '/dashboard/'\nALLOWED_HOSTS = ['*','$HOST_IP']\nSESSION_COOKIE_SECURE = False\nCSRF_COOKIE_SECURE = False" | sudo tee /etc/openstack-dashboard/local_settings.py
+sudo chown apache:apache /etc/openstack-dashboard/local_settings.py
+sudo bash -c 'echo -e "\nRedirect /header /dashboard/header" >> /etc/httpd/conf.d/openstack-dashboard.conf'
+sudo systemctl restart httpd
+
+# Horizon 配置修改
+# Fix login redirect issue
+sudo sed -i '$ a # Fix login redirect issue\nWEBROOT = "/dashboard/"\nLOGIN_REDIRECT_URL = WEBROOT' /etc/openstack-dashboard/local_settings
+
+# 修改 DEBUG 模式
+sudo sed -i 's/DEBUG = False/DEBUG = True/' /etc/openstack-dashboard/local_settings
+
+# 重启 Apache 使配置生效
+sudo systemctl restart httpd
+
+# 服务状态检查和启用脚本
+cat > /root/check-and-enable-services.sh << 'EOF'
+#!/bin/bash
+SERVICES=(
+  mariadb
+  rabbitmq-server
+  memcached
+  httpd
+  openstack-glance-api
+  openstack-nova-api
+  openstack-nova-scheduler
+  openstack-nova-conductor
+  openstack-nova-novncproxy
+  openstack-nova-compute
+  libvirtd
+  neutron-server
+  neutron-linuxbridge-agent
+  neutron-dhcp-agent
+  neutron-metadata-agent
+  neutron-l3-agent
+)
+
+for svc in "${SERVICES[@]}"; do
+  echo "Checking $svc..."
+  if ! systemctl is-enabled --quiet "$svc"; then
+    echo "  -> NOT enabled. Enabling now..."
+    systemctl enable "$svc"
+  else
+    echo "  -> OK (enabled)"
+  fi
+done
+EOF
+
+chmod +x /root/check-and-enable-services.sh
+bash /root/check-and-enable-services.sh
+
+
+sudo systemctl start httpd
+
+sudo systemctl restart httpd
+
+# Nova cell配置检查和修复
+cat > /root/fix-nova-cells.sh << 'EOF'
+#!/bin/bash
+echo "🔹 第一步：检查当前 cells 状态"
+source /etc/keystone/admin-openrc.sh
+nova-manage cell_v2 list_cells
+
+echo "🔹 第二步：强制发现并注册计算主机"
+nova-manage cell_v2 discover_hosts --verbose
+
+echo "🔹 第三步：确认 nova-compute 服务已启动并注册"
+openstack compute service list
+
+echo "🔹 第四步：验证主机是否已加入 cell"
+nova-manage cell_v2 list_hosts
+EOF
+
+chmod +x /root/fix-nova-cells.sh
+
+echo "执行Nova cell配置检查和修复..."
+bash /root/fix-nova-cells.sh
+
+
 
 # ==============================
 # 最终总结
