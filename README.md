@@ -11,4 +11,4 @@
 
 或者curl -sSL https://raw.githubusercontent.com/ZJT8848/openStack-in-openEuler/main/t_openstack.sh | bash
 
-采用 BY-NC-SA 许可协议。转载请注明出处！
+采用 BY-NC-SA 许可协议（https://creativecommons.org/licenses/by-nc-sa/4.0/）。转载请注明出处！
