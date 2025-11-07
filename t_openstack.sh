@@ -1,5 +1,7 @@
 #!/bin/bash
 
+#!/bin/bash
+
 # ==========================================================================
 # 脚本作者： ZJT8848,链接：https://github.com/ZJT8848/openStack-in-openEuler
 # 部分代码来源：作者 huhy,链接：https://www.cnblogs.com/hoyeong/p/18793119
@@ -11,8 +13,6 @@
 
 # --- 配置区 ---
 # 自动获取网络配置信息
-
-
 echo "正在检测网络接口..."
 INTERFACES=($(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|ens|eno|enp|wlan)' | head -10))
 
@@ -72,22 +72,23 @@ CURRENT_STEP=0
 
 # 显示进度条的函数
 show_progress() {
-  local percentage=$((CURRENT_STEP * 100 / TOTAL_STEPS))
-  local completed=$((CURRENT_STEP * 50 / TOTAL_STEPS))
-  local remaining=$((50 - completed))
-  local bar=""
-  for ((i=0; i<completed; i++)); do bar="${bar}#"; done
-  for ((i=0; i<remaining; i++)); do bar="${bar}-"; done
-
-  # 移动到屏幕底部：先换行确保在新行，再用 \033[F 上移一行（如果需要）
-  # 更简单：直接打印并用 \r 覆盖当前行，但需独占一行
-  
-  # 我们改为：每次更新时，先打印一个换行（确保不在中间行），再回到上一行写进度条
-  # 但这会留下空行
-
-  # ⭐ 最小侵入式修复：在进度条前加 \n，让它总在最新行
-  echo -ne "\n\033[2K[${bar}] ${percentage}% (${CURRENT_STEP}/${TOTAL_STEPS})"
+    local percentage=$((CURRENT_STEP * 100 / TOTAL_STEPS))
+    local completed=$((CURRENT_STEP * 50 / TOTAL_STEPS))
+    local remaining=$((50 - completed))
+    
+    # 生成进度条
+    local bar=""
+    for ((i=0; i<completed; i++)); do
+        bar="${bar}#"
+    done
+    for ((i=0; i<remaining; i++)); do
+        bar="${bar}-"
+    done
+    
+    # 保存光标位置并移动到屏幕底部
+    echo -ne "\033[s\033[999;1H\033[2K[${bar}] ${percentage}% (${CURRENT_STEP}/${TOTAL_STEPS})\033[u"
 }
+
 # 更新进度的函数
 update_progress() {
     CURRENT_STEP=$((CURRENT_STEP + 1))
@@ -104,11 +105,10 @@ error() {
 }
 
 # --- 欢迎界面 ---
-cat > /etc/motd <<EOF 
- ################################
- #    Welcome  to  openstack    #
- #  https://github.com/ZJT8848  #
- ################################
+cat > /etc/motd <<EOF
+################################
+#    Welcome  to  openstack    #
+################################
 EOF
 
 # ==============================
