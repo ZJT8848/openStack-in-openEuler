@@ -15,4 +15,4 @@
 
 测试基于ESXI7.9虚拟机，单网卡ens33，IP192.168.1.204，最小化安装，OpenEuler22.03 LST SP4
 
-已知BUG：网络检测还在调
+已知BUG：openeuler24多网卡请使用curl -sSL https://raw.githubusercontent.com/ZJT8848/openStack-in-openEuler/main/t_openstack24.sh | bash
