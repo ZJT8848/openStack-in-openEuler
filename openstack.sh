@@ -1319,11 +1319,6 @@ EOF
                 fi
             fi
         done
-    else
-        echo "警告: keystone-manage 命令未找到，继续执行"
-        ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
-    fi
-
     # 删除重复的httpd启动代码，避免冲突
     # 已在前面配置了httpd服务，此处不再重复启动
 
@@ -1415,8 +1410,6 @@ if ! openstack token issue &> /dev/null; then
     ss -tuln | grep ':5000' || echo "端口5000未被监听"
     echo "警告: keystone bootstrap 失败，请检查/var/log/keystone/keystone.log，继续执行"
     ERROR_LOG+=("[keystone初始化] keystone bootstrap 失败")
-fi
-
 fi
 
 echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
