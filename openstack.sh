@@ -1442,9 +1442,6 @@ EOF
         echo "警告: python3-openstackclient 安装失败"
         ERROR_LOG+=("[keystone安装] python3-openstackclient 安装失败")
     fi
-else
-    echo "警告: keystone 相关软件包安装失败，继续执行"
-    ERROR_LOG+=("[keystone安装] keystone 相关软件包安装失败")
 fi
 
 # 安装glance服务
@@ -1497,6 +1494,7 @@ else
     echo "警告: glance服务依赖的keystone服务未就绪，继续执行"
     ERROR_LOG+=("[服务依赖检查] glance服务依赖的keystone服务未就绪")
 fi
+
 if command -v openstack &> /dev/null; then
     echo "创建glance用户..."
     if ! openstack user create --domain $DOMAIN_NAME --password $GLANCE_PASS glance; then
