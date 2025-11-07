@@ -2,6 +2,7 @@
 
 # ==============================
 # OpenStack Train All-in-One 自动化部署脚本（带进度提示 + 中文错误汇总）
+# 适配 openEuler / CentOS 7/8/9
 # ==============================
 
 # --- 配置区 ---
@@ -32,8 +33,7 @@ cat > /etc/motd <<EOF
 EOF
 
 # ==============================
-# 步骤包装函数：自动打印开始/结束/捕获错误
-# 使用方式：run_step "步骤名" 命令 [参数...]
+# 步骤包装函数
 # ==============================
 run_step() {
     local step_name="$1"
@@ -49,98 +49,86 @@ run_step() {
 # --- 禁用 SELinux ---
 run_step "禁用 SELinux" bash -c '
     sed -i "s/SELINUX=.*/SELINUX=disabled/g" /etc/selinux/config
-    setenforce 0
+    setenforce 0 || true
 '
 
 # --- 关闭 firewalld ---
 run_step "关闭 firewalld" bash -c '
     systemctl stop firewalld
-    systemctl disable firewalld >> /dev/null 2>&1
+    systemctl disable firewalld >/dev/null 2>&1 || true
 '
 
 # --- 清空 iptables ---
 run_step "清空并禁用 iptables" bash -c '
     yum install -y iptables-services
-    systemctl restart iptables
+    systemctl enable --now iptables
     iptables -F
     iptables -X
     iptables -Z
-    /usr/sbin/iptables-save
+    /usr/sbin/iptables-save > /etc/sysconfig/iptables
     systemctl stop iptables
     systemctl disable iptables
 '
 
 # --- 优化 SSH ---
 run_step "优化 SSH 配置" bash -c '
-    sed -i -e "s/#UseDNS yes/UseDNS no/g" -e "s/GSSAPIAuthentication yes/GSSAPIAuthentication no/g" /etc/ssh/sshd_config
+    sed -i "s/#UseDNS yes/UseDNS no/; s/GSSAPIAuthentication yes/GSSAPIAuthentication no/" /etc/ssh/sshd_config
     systemctl reload sshd
 '
 
 # --- 设置主机名 ---
-run_step "设置主机名" bash -c '
-    current_ip=$(hostname -I | awk "{print \$1}")
-    for node in "${NODES[@]}"; do
-        ip=$(echo "$node" | awk "{print \$1}")
-        hostname=$(echo "$node" | awk "{print \$2}")
-        if [[ "$current_ip" == "$ip" ]]; then
-            if [[ "$(hostname)" != "$hostname" ]]; then
-                hostnamectl set-hostname "$hostname"
-                log "Hostname set to $hostname"
+run_step "设置主机名" bash -c "
+    current_ip=\$(hostname -I | awk '{print \$1}')
+    for node in ${NODES[@]}; do
+        ip=\$(echo \"\$node\" | awk '{print \$1}')
+        hostname=\$(echo \"\$node\" | awk '{print \$2}')
+        if [[ \"\$current_ip\" == \"\$ip\" ]]; then
+            if [[ \"\$(hostname)\" != \"\$hostname\" ]]; then
+                hostnamectl set-hostname \"\$hostname\"
+                echo \"Hostname set to \$hostname\"
             fi
             break
         fi
     done
-'
+"
 
 # --- 更新 /etc/hosts ---
-run_step "更新 /etc/hosts" bash -c '
-    for node in "${NODES[@]}"; do
-        ip=$(echo "$node" | awk "{print \$1}")
-        hostname=$(echo "$node" | awk "{print \$2}")
-        if ! grep -q "$ip $hostname" /etc/hosts; then
-            echo "$ip $hostname" >> /etc/hosts
-            log "Added $hostname to /etc/hosts"
-        fi
+run_step "更新 /etc/hosts" bash -c "
+    for node in ${NODES[@]}; do
+        ip=\$(echo \"\$node\" | awk '{print \$1}')
+        hostname=\$(echo \"\$node\" | awk '{print \$2}')
+        grep -q \"\$ip \$hostname\" /etc/hosts || echo \"\$ip \$hostname\" >> /etc/hosts
     done
-'
+"
 
 # --- SSH 免密登录准备 ---
-run_step "配置 SSH 免密登录" bash -c '
-    if [[ ! -s ~/.ssh/id_rsa.pub ]]; then
-        ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa -q -b 2048
-        log "Generated SSH key"
-    fi
-
-    if ! command -v sshpass &> /dev/null; then
-        yum install -y sshpass
-        log "Installed sshpass"
-    fi
-
-    for node in "${NODES[@]}"; do
-        ip=$(echo "$node" | awk "{print \$1}")
-        hostname=$(echo "$node" | awk "{print \$2}")
-        log "Copying SSH key to $hostname ($ip)"
-        sshpass -p "'"$HOST_PASS"'" ssh-copy-id -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa.pub "$hostname" || true
+run_step "配置 SSH 免密登录" bash -c "
+    [ ! -f ~/.ssh/id_rsa ] && ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa -q
+    command -v sshpass >/dev/null || yum install -y sshpass
+    for node in ${NODES[@]}; do
+        ip=\$(echo \"\$node\" | awk '{print \$1}')
+        hostname=\$(echo \"\$node\" | awk '{print \$2}')
+        sshpass -p '$HOST_PASS' ssh-copy-id -o StrictHostKeyChecking=no \"\$hostname\" || true
     done
-'
+"
 
 # --- 时间同步 (chrony) ---
-run_step "配置时间同步 (chrony)" bash -c '
-    name=$(hostname)
-    if [[ "$name" == "'"$TIME_SERVER"'" ]]; then
-        sed -i "3,4s/^/#/g" /etc/chrony.conf
-        sed -i "7s/^/server '"$TIME_SERVER"' iburst/g" /etc/chrony.conf
-        echo "allow '"$TIME_SERVER_IP"'" >> /etc/chrony.conf
-        echo "local stratum 10" >> /etc/chrony.conf
+run_step "配置时间同步 (chrony)" bash -c "
+    name=\$(hostname)
+    sed -i '/^server/d' /etc/chrony.conf
+    if [[ \"\$name\" == \"$TIME_SERVER\" ]]; then
+        echo 'server ntp.aliyun.com iburst' >> /etc/chrony.conf
+        echo 'allow $TIME_SERVER_IP' >> /etc/chrony.conf
+        echo 'local stratum 10' >> /etc/chrony.conf
     else
-        sed -i "3,4s/^/#/g" /etc/chrony.conf
-        sed -i "7s/^/server '"$TIME_SERVER"' iburst/g" /etc/chrony.conf
+        echo 'server $TIME_SERVER iburst' >> /etc/chrony.conf
     fi
     systemctl restart chronyd
-'
+"
 
 # --- 安装 OpenStack Train Yum 源 ---
-run_step "安装 OpenStack Train 源" yum install -y openstack-release-train
+
+yum install -y openstack-release-train
 
 # --- 创建全局环境变量文件 ---
 cat > /root/openrc.sh << EOF
@@ -172,8 +160,7 @@ EOF
 source /root/openrc.sh
 
 # --- 安装基础服务（MySQL/RabbitMQ/Memcached）---
-run_step "安装 MySQL、RabbitMQ 和 Memcached" bash -c '
-    cat > /root/iaas-install-mysql.sh << '\''EOF'\''
+cat > /root/iaas-install-mysql.sh << 'EOF'
 #!/bin/bash
 source /root/openrc.sh
 
@@ -189,70 +176,64 @@ collation-server = utf8_general_ci
 character-set-server = utf8
 EOFF
 
-systemctl enable mariadb
-systemctl start mariadb
+systemctl enable --now mariadb
 
-# 等待 MariaDB 启动完成
-sleep 5
+sleep 10
 
-# 尝试无密码登录（首次启动通常允许）
 if mysql -e "SELECT 1;" &>/dev/null; then
-    # 设置 root 密码
-    mysql -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$DB_PASS'\'';"
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$DB_PASS';"
     mysql -uroot -p$DB_PASS -e "FLUSH PRIVILEGES"
 else
-    echo "❌ 无法以无密码方式连接 MariaDB，尝试安全模式初始化..."
     systemctl stop mariadb
     mysqld_safe --skip-grant-tables --skip-networking &
     sleep 10
-    mysql -e "FLUSH PRIVILEGES; ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$DB_PASS'\'';"
+    mysql -e "FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED BY '$DB_PASS';"
     killall mysqld_safe
     systemctl start mariadb
 fi
 
-# 验证 MariaDB 是否可用
 if ! mysql -uroot -p$DB_PASS -e "SELECT 1;" &>/dev/null; then
-    echo "❌ MariaDB 无法通过密码登录，请检查配置！"
+    echo "❌ MariaDB 无法通过密码登录！"
     exit 1
 fi
 
-# RabbitMQ
 yum install -y rabbitmq-server
 systemctl enable --now rabbitmq-server
+sleep 10
 rabbitmqctl add_user $RABBIT_USER $RABBIT_PASS
 rabbitmqctl set_permissions $RABBIT_USER ".*" ".*" ".*"
+rabbitmqctl set_user_tags $RABBIT_USER administrator
 
-# Memcached
 yum install -y memcached python3-memcached
-sed -i -e "s/OPTIONS=.*/OPTIONS=\"-l 127.0.0.1,::1,$HOST_NAME\"/g" /etc/sysconfig/memcached
+sed -i "s/OPTIONS=.*/OPTIONS=\"-l 127.0.0.1,::1,$HOST_NAME\"/" /etc/sysconfig/memcached
 systemctl enable --now memcached
 EOF
 
 chmod +x /root/iaas-install-mysql.sh
-bash /root/iaas-install-mysql.sh
-'
-
-echo "✅ MariaDB、RabbitMQ、Memcached 安装成功"
+run_step "安装 MySQL、RabbitMQ 和 Memcached" /root/iaas-install-mysql.sh
 
 # --- Keystone 安装 ---
-run_step "安装 Keystone 身份认证服务" bash -c '
-    cat > /root/iaas-install-keystone.sh << '\''EOF'\''
+cat > /root/iaas-install-keystone.sh << 'EOF'
 #!/bin/bash
 source /root/openrc.sh
 
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS keystone;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO '\''keystone'\''@'\''localhost'\'' IDENTIFIED BY '\''$KEYSTONE_DBPASS'\'';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO '\''keystone'\''@'\''%'\'' IDENTIFIED BY '\''$KEYSTONE_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' IDENTIFIED BY '$KEYSTONE_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%' IDENTIFIED BY '$KEYSTONE_DBPASS';"
 
 yum install -y openstack-keystone httpd mod_wsgi
-cp /etc/keystone/keystone.conf{,.bak}
+
 cat > /etc/keystone/keystone.conf << eoff
 [DEFAULT]
 log_dir = /var/log/keystone
 [database]
-connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_NAME/keystone
+connection = mysql+pymysql://keystone:$KEYSTONE_DBPASS@$HOST_NAME:3306/keystone
 [token]
 provider = fernet
+[fernet_tokens]
+key_repository = /etc/keystone/fernet-keys/
+[credential]
+key_repository = /etc/keystone/credential-keys/
 eoff
 
 su -s /bin/sh -c "keystone-manage db_sync" keystone
@@ -265,8 +246,12 @@ keystone-manage bootstrap --bootstrap-password $ADMIN_PASS \
     --bootstrap-region-id RegionOne
 
 echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf
-ln -s /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/
+ln -sf /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/
 systemctl enable --now httpd
+
+mkdir -p /var/log/keystone /etc/keystone/fernet-keys /etc/keystone/credential-keys
+chown -R keystone:keystone /var/log/keystone /etc/keystone/fernet-keys /etc/keystone/credential-keys
+chmod 750 /var/log/keystone /etc/keystone/fernet-keys /etc/keystone/credential-keys
 
 cat > /etc/keystone/admin-openrc.sh << EOF2
 export OS_PROJECT_DOMAIN_NAME=Default
@@ -283,23 +268,20 @@ source /etc/keystone/admin-openrc.sh
 yum install -y python3-openstackclient
 openstack project create --domain default --description "Service Project" service
 openstack token issue
+EOF
 
 chmod +x /root/iaas-install-keystone.sh
-bash /root/iaas-install-keystone.sh
-'
-
-echo "✅ Keystone 安装成功"
+run_step "安装 Keystone 身份认证服务" /root/iaas-install-keystone.sh
 
 # --- Glance 安装 ---
-run_step "安装 Glance 镜像服务" bash -c '
-    cat > /root/iaas-install-glance.sh << '\''EOF'\''
+cat > /root/iaas-install-glance.sh << 'EOF'
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
 
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS glance;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO '\''glance'\''@'\''localhost'\'' IDENTIFIED BY '\''$GLANCE_DBPASS'\'';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO '\''glance'\''@'\''%'\'' IDENTIFIED BY '\''$GLANCE_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost' IDENTIFIED BY '$GLANCE_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY '$GLANCE_DBPASS';"
 
 openstack user create --domain $DOMAIN_NAME --password $GLANCE_PASS glance
 openstack role add --project service --user glance admin
@@ -309,13 +291,13 @@ openstack endpoint create --region RegionOne image internal http://$HOST_NAME:92
 openstack endpoint create --region RegionOne image admin http://$HOST_NAME:9292
 
 yum install -y openstack-glance
-cp /etc/glance/glance-api.conf{,.bak}
+
 cat > /etc/glance/glance-api.conf << eoff
 [database]
-connection = mysql+pymysql://glance:$GLANCE_DBPASS@$HOST_NAME/glance
+connection = mysql+pymysql://glance:$GLANCE_DBPASS@$HOST_NAME:3306/glance
 [keystone_authtoken]
-www_authenticate_uri = http://$HOST_NAME:5000
-auth_url = http://$HOST_NAME:5000
+www_authenticate_uri = http://$HOST_NAME:5000/v3
+auth_url = http://$HOST_NAME:5000/v3
 memcached_servers = $HOST_NAME:11211
 auth_type = password
 project_domain_name = Default
@@ -332,25 +314,24 @@ flavor = keystone
 eoff
 
 su -s /bin/sh -c "glance-manage db_sync" glance
-systemctl enable --now openstack-glance-api.service
+
+mkdir -p /var/log/glance /var/lib/glance
+chown -R glance:glance /var/log/glance /var/lib/glance
+systemctl enable --now openstack-glance-api
 EOF
 
 chmod +x /root/iaas-install-glance.sh
-bash /root/iaas-install-glance.sh
-'
-
-echo "✅ Glance 安装成功"
+run_step "安装 Glance 镜像服务" /root/iaas-install-glance.sh
 
 # --- Placement 安装 ---
-run_step "安装 Placement 资源跟踪服务" bash -c '
-    cat > /root/iaas-install-placement.sh << '\''EOF'\''
+cat > /root/iaas-install-placement.sh << 'EOF'
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
 
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE placement;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO '\''placement'\''@'\''localhost'\'' IDENTIFIED BY '\''$PLACEMENT_DBPASS'\'';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO '\''placement'\''@'\''%'\'' IDENTIFIED BY '\''$PLACEMENT_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'localhost' IDENTIFIED BY '$PLACEMENT_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'%' IDENTIFIED BY '$PLACEMENT_DBPASS';"
 
 openstack user create --domain $DOMAIN_NAME --password $PLACEMENT_PASS placement
 openstack role add --project service --user placement admin
@@ -360,11 +341,14 @@ openstack endpoint create --region RegionOne placement internal http://$HOST_NAM
 openstack endpoint create --region RegionOne placement admin http://$HOST_NAME:8778
 
 yum install -y openstack-placement-api
-cp /etc/placement/placement.conf{,.bak}
+
 cat > /etc/placement/placement.conf << eoff
+[DEFAULT]
+debug = false
 [api]
 auth_strategy = keystone
 [keystone_authtoken]
+www_authenticate_uri = http://$HOST_NAME:5000/v3
 auth_url = http://$HOST_NAME:5000/v3
 memcached_servers = $HOST_NAME:11211
 auth_type = password
@@ -374,34 +358,34 @@ project_name = service
 username = placement
 password = $PLACEMENT_PASS
 [placement_database]
-connection = mysql+pymysql://placement:$PLACEMENT_DBPASS@$HOST_NAME/placement
+connection = mysql+pymysql://placement:$PLACEMENT_DBPASS@$HOST_NAME:3306/placement
 eoff
 
 su -s /bin/sh -c "placement-manage db sync" placement
+
+mkdir -p /var/log/placement
+chown -R placement:placement /var/log/placement
 systemctl restart httpd
+EOF
 
 chmod +x /root/iaas-install-placement.sh
-bash /root/iaas-install-placement.sh
-'
-
-echo "✅ Placement 安装成功"
+run_step "安装 Placement 资源跟踪服务" /root/iaas-install-placement.sh
 
 # --- Nova 安装 ---
-run_step "安装 Nova 计算服务" bash -c '
-    cat > /root/iaas-install-nova-controller.sh << '\''EOF'\''
+cat > /root/iaas-install-nova-controller.sh << 'EOF'
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
 
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS nova;"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';"
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS nova_api;"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';"
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS nova_cell0;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO '\''nova'\''@'\''localhost'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO '\''nova'\''@'\''%'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO '\''nova'\''@'\''localhost'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO '\''nova'\''@'\''%'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO '\''nova'\''@'\''localhost'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO '\''nova'\''@'\''%'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';"
 
 openstack user create --domain $DOMAIN_NAME --password $NOVA_PASS nova
 openstack role add --project service --user nova admin
@@ -411,11 +395,11 @@ openstack endpoint create --region RegionOne compute internal http://$HOST_NAME:
 openstack endpoint create --region RegionOne compute admin http://$HOST_NAME:8774/v2.1
 
 yum install -y openstack-nova-api openstack-nova-conductor openstack-nova-novncproxy openstack-nova-scheduler openstack-nova-compute
-cp /etc/nova/nova.conf{,.bak}
+
 cat > /etc/nova/nova.conf << eoff
 [DEFAULT]
 enabled_apis = osapi_compute,metadata
-transport_url = rabbit://$RABBIT_USER:$RABBIT_PASS@$HOST_NAME
+transport_url = rabbit://$RABBIT_USER:$RABBIT_PASS@$HOST_NAME:5672
 my_ip = $HOST_IP
 use_neutron = true
 firewall_driver = nova.virt.firewall.NoopFirewallDriver
@@ -425,14 +409,14 @@ log_dir = /var/log/nova
 [api]
 auth_strategy = keystone
 [api_database]
-connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_NAME/nova_api
+connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_NAME:3306/nova_api
 [database]
-connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_NAME/nova
+connection = mysql+pymysql://nova:$NOVA_DBPASS@$HOST_NAME:3306/nova
 [glance]
 api_servers = http://$HOST_NAME:9292
 [keystone_authtoken]
-www_authenticate_uri = http://$HOST_NAME:5000/
-auth_url = http://$HOST_NAME:5000/
+www_authenticate_uri = http://$HOST_NAME:5000/v3
+auth_url = http://$HOST_NAME:5000/v3
 memcached_servers = $HOST_NAME:11211
 auth_type = password
 project_domain_name = Default
@@ -441,7 +425,7 @@ project_name = service
 username = nova
 password = $NOVA_PASS
 [neutron]
-auth_url = http://$HOST_NAME:5000
+auth_url = http://$HOST_NAME:5000/v3
 auth_type = password
 project_domain_name = Default
 user_domain_name = Default
@@ -467,6 +451,11 @@ server_proxyclient_address = $HOST_IP
 novncproxy_base_url = http://$HOST_IP:6080/vnc_auto.html
 [oslo_concurrency]
 lock_path = /var/lib/nova/tmp
+[oslo_messaging_rabbit]
+rabbit_userid = $RABBIT_USER
+rabbit_password = $RABBIT_PASS
+rabbit_host = $HOST_NAME
+rabbit_port = 5672
 eoff
 
 su -s /bin/sh -c "nova-manage api_db sync" nova
@@ -474,32 +463,31 @@ su -s /bin/sh -c "nova-manage cell_v2 map_cell0" nova
 su -s /bin/sh -c "nova-manage cell_v2 create_cell --name=cell1 --verbose" nova
 su -s /bin/sh -c "nova-manage db sync" nova
 
-systemctl enable --now openstack-nova-api.service openstack-nova-scheduler.service openstack-nova-conductor.service openstack-nova-novncproxy.service libvirtd.service openstack-nova-compute.service
+mkdir -p /var/log/nova /var/lib/nova
+chown -R nova:nova /var/log/nova /var/lib/nova
+
+systemctl enable openstack-nova-api openstack-nova-scheduler openstack-nova-conductor openstack-nova-novncproxy libvirtd openstack-nova-compute
+systemctl start openstack-nova-api openstack-nova-scheduler openstack-nova-conductor openstack-nova-novncproxy libvirtd openstack-nova-compute
 
 cat > /root/nova-service-restart.sh << EOF2
 #!/bin/bash
 systemctl restart openstack-nova-api openstack-nova-scheduler openstack-nova-conductor openstack-nova-novncproxy openstack-nova-compute
 EOF2
 chmod +x /root/nova-service-restart.sh
-bash /root/nova-service-restart.sh
 EOF
 
 chmod +x /root/iaas-install-nova-controller.sh
-bash /root/iaas-install-nova-controller.sh
-'
-
-echo "✅ Nova 安装成功"
+run_step "安装 Nova 计算服务" /root/iaas-install-nova-controller.sh
 
 # --- Neutron 安装 ---
-run_step "安装 Neutron 网络服务" bash -c '
-    cat > /root/iaas-install-neutron-controller.sh << '\''EOF'\''
+cat > /root/iaas-install-neutron-controller.sh << 'EOF'
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
 
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS neutron;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO '\''neutron'\''@'\''localhost'\'' IDENTIFIED BY '\''$NEUTRON_DBPASS'\'';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO '\''neutron'\''@'\''%'\'' IDENTIFIED BY '\''$NEUTRON_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'localhost' IDENTIFIED BY '$NEUTRON_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'%' IDENTIFIED BY '$NEUTRON_DBPASS';"
 
 openstack user create --domain $DOMAIN_NAME --password $NEUTRON_PASS neutron
 openstack role add --project service --user neutron admin
@@ -509,18 +497,6 @@ openstack endpoint create --region RegionOne network internal http://$HOST_NAME:
 openstack endpoint create --region RegionOne network admin http://$HOST_NAME:9696
 
 yum install -y openstack-neutron openstack-neutron-linuxbridge ebtables ipset openstack-neutron-ml2
-
-if ! ip a show "$INTERFACE_NAME" | grep -q "$HOST_IP"; then
-cat > /etc/sysconfig/network-scripts/ifcfg-$INTERFACE_NAME << EOF2
-DEVICE=$INTERFACE_NAME
-TYPE=Ethernet
-BOOTPROTO=none
-ONBOOT=yes
-IPADDR=$HOST_IP
-PREFIX=24
-EOF2
-systemctl restart NetworkManager
-fi
 
 cp /etc/neutron/neutron.conf{,.bak}
 cat > /etc/neutron/neutron.conf << eoff
@@ -533,13 +509,12 @@ state_path = /var/lib/neutron
 dhcp_agent_notification = true
 notify_nova_on_port_status_changes = true
 notify_nova_on_port_data_changes = true
-transport_url = rabbit://$RABBIT_USER:$RABBIT_PASS@$HOST_NAME
-api_workers = 3
+transport_url = rabbit://$RABBIT_USER:$RABBIT_PASS@$HOST_NAME:5672
 [database]
-connection = mysql+pymysql://neutron:$NEUTRON_DBPASS@$HOST_NAME/neutron
+connection = mysql+pymysql://neutron:$NEUTRON_DBPASS@$HOST_NAME:3306/neutron
 [keystone_authtoken]
-www_authenticate_uri = http://$HOST_NAME:5000
-auth_url = http://$HOST_NAME:5000
+www_authenticate_uri = http://$HOST_NAME:5000/v3
+auth_url = http://$HOST_NAME:5000/v3
 memcached_servers = $HOST_NAME:11211
 auth_type = password
 project_domain_name = default
@@ -548,7 +523,7 @@ project_name = service
 username = neutron
 password = $NEUTRON_PASS
 [nova]
-auth_url = http://$HOST_NAME:5000
+auth_url = http://$HOST_NAME:5000/v3
 auth_type = password
 project_domain_name = default
 user_domain_name = default
@@ -560,7 +535,6 @@ password = $NOVA_PASS
 lock_path = /var/lib/neutron/tmp
 eoff
 
-cp /etc/neutron/plugins/ml2/ml2_conf.ini{,.bak}
 cat > /etc/neutron/plugins/ml2/ml2_conf.ini << eoff
 [ml2]
 type_drivers = flat,vlan,vxlan
@@ -575,7 +549,6 @@ vni_ranges = $minvlan:$maxvlan
 enable_ipset = true
 eoff
 
-cp /etc/neutron/plugins/ml2/linuxbridge_agent.ini{,.bak}
 cat > /etc/neutron/plugins/ml2/linuxbridge_agent.ini << eoff
 [linux_bridge]
 physical_interface_mappings = $Physical_NAME:$INTERFACE_NAME
@@ -588,13 +561,11 @@ enable_security_group = true
 firewall_driver = neutron.agent.linux.iptables_firewall.IptablesFirewallDriver
 eoff
 
-cp /etc/neutron/l3_agent.ini{,.bak}
 cat > /etc/neutron/l3_agent.ini << eoff
 [DEFAULT]
 interface_driver = linuxbridge
 eoff
 
-cp /etc/neutron/dhcp_agent.ini{,.bak}
 cat > /etc/neutron/dhcp_agent.ini << eoff
 [DEFAULT]
 interface_driver = linuxbridge
@@ -602,42 +573,45 @@ dhcp_driver = neutron.agent.linux.dhcp.Dnsmasq
 enable_isolated_metadata = true
 eoff
 
-cp /etc/neutron/metadata_agent.ini{,.bak}
 cat > /etc/neutron/metadata_agent.ini << eoff
 [DEFAULT]
 nova_metadata_host = $HOST_IP
 metadata_proxy_shared_secret = $METADATA_SECRET
+[cache]
+enabled = false
 eoff
 
 modprobe br_netfilter
-echo "net.ipv4.conf.all.rp_filter=0" >> /etc/sysctl.conf
-echo "net.ipv4.conf.default.rp_filter=0" >> /etc/sysctl.conf
-echo "net.bridge.bridge-nf-call-iptables = 1" >> /etc/sysctl.conf
-echo "net.bridge.bridge-nf-call-ip6tables = 1" >> /etc/sysctl.conf
+cat >> /etc/sysctl.conf << EOFF
+net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.default.rp_filter=0
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOFF
 sysctl -p
 
 ln -sf /etc/neutron/plugins/ml2/ml2_conf.ini /etc/neutron/plugin.ini
 su -s /bin/sh -c "neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugins/ml2/ml2_conf.ini upgrade head" neutron
 
-systemctl restart openstack-nova-api.service
-systemctl enable --now neutron-server.service neutron-linuxbridge-agent.service neutron-dhcp-agent.service neutron-metadata-agent.service neutron-l3-agent.service
+mkdir -p /var/log/neutron /var/lib/neutron
+chown -R neutron:neutron /var/log/neutron /var/lib/neutron
+
+systemctl restart openstack-nova-api
+systemctl enable neutron-server neutron-linuxbridge-agent neutron-dhcp-agent neutron-metadata-agent neutron-l3-agent
+systemctl start neutron-server neutron-linuxbridge-agent neutron-dhcp-agent neutron-metadata-agent neutron-l3-agent
 
 cat > /root/neutron-service-restart.sh << EOF2
 #!/bin/bash
-systemctl restart neutron-server.service neutron-linuxbridge-agent.service neutron-dhcp-agent.service neutron-metadata-agent.service neutron-l3-agent.service
+systemctl restart neutron-server neutron-linuxbridge-agent neutron-dhcp-agent neutron-metadata-agent neutron-l3-agent
 EOF2
 chmod +x /root/neutron-service-restart.sh
-bash /root/neutron-service-restart.sh
+EOF
 
 chmod +x /root/iaas-install-neutron-controller.sh
-bash /root/iaas-install-neutron-controller.sh
-'
-
-echo "✅ Neutron 安装成功"
+run_step "安装 Neutron 网络服务" /root/iaas-install-neutron-controller.sh
 
 # --- Horizon 安装 ---
-run_step "安装 Horizon Web 控制台" bash -c '
-    cat > /root/iaas-install-horizon.sh << '\''EOF'\''
+cat > /root/iaas-install-horizon.sh << 'EOF'
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
@@ -645,9 +619,10 @@ source /etc/keystone/admin-openrc.sh
 yum install -y openstack-dashboard
 
 cp /etc/openstack-dashboard/local_settings{,.bak}
-sed -i "s/OPENSTACK_HOST = .*/OPENSTACK_HOST = '\''$HOST_NAME'\''/" /etc/openstack-dashboard/local_settings
-sed -i "s/ALLOWED_HOSTS = .*/ALLOWED_HOSTS = ['\''*'\'' , ]/" /etc/openstack-dashboard/local_settings
-sed -i "104s/.*/SESSION_ENGINE = '\''django.contrib.sessions.backends.cache'\''/" /etc/openstack-dashboard/local_settings
+sed -i "s/OPENSTACK_HOST = .*/OPENSTACK_HOST = '$HOST_NAME'/" /etc/openstack-dashboard/local_settings
+sed -i "s/ALLOWED_HOSTS = .*/ALLOWED_HOSTS = ['*', ]/" /etc/openstack-dashboard/local_settings
+sed -i "s/^SESSION_ENGINE.*/SESSION_ENGINE = 'django.contrib.sessions.backends.cache'/" /etc/openstack-dashboard/local_settings
+
 cat >> /etc/openstack-dashboard/local_settings << EOFF
 
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
@@ -663,21 +638,18 @@ OPENSTACK_API_VERSIONS = {
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.memcached.MemcachedCache",
-        "LOCATION": "controller:11211",
+        "LOCATION": "$HOST_NAME:11211",
     }
 }
 EOFF
 
-sed -i "147s/.*/TIME_ZONE = '\''Asia\/Shanghai'\''/" /etc/openstack-dashboard/local_settings
+sed -i "s/^TIME_ZONE.*/TIME_ZONE = 'Asia\/Shanghai'/" /etc/openstack-dashboard/local_settings
 
 systemctl restart httpd memcached
 EOF
 
 chmod +x /root/iaas-install-horizon.sh
-bash /root/iaas-install-horizon.sh
-'
-
-echo "✅ Horizon 安装成功"
+run_step "安装 Horizon Web 控制台" /root/iaas-install-horizon.sh
 
 # ==============================
 # 最终总结
