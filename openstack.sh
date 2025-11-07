@@ -714,9 +714,31 @@ if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf ins
     echo "额外检查Keystone认证插件..."
     AUTH_PLUGINS=("password" "token" "external" "oauth1" "application_credential")
     for plugin in "${AUTH_PLUGINS[@]}"; do
-        if ! python3 -c "import keystone.auth.plugins.$plugin" 2>/dev/null; then
-            echo "警告: Keystone $plugin 认证插件导入失败"
-            ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件导入失败")
+        if [[ "$plugin" == "password" ]]; then
+            if ! python3 -c "import keystone.auth.password" 2>/dev/null; then
+                echo "警告: Keystone $plugin 认证插件导入失败"
+                ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件导入失败")
+            fi
+        elif [[ "$plugin" == "token" ]]; then
+            if ! python3 -c "import keystone.auth.token" 2>/dev/null; then
+                echo "警告: Keystone $plugin 认证插件导入失败"
+                ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件导入失败")
+            fi
+        elif [[ "$plugin" == "external" ]]; then
+            if ! python3 -c "import keystone.auth.external" 2>/dev/null; then
+                echo "警告: Keystone $plugin 认证插件导入失败"
+                ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件导入失败")
+            fi
+        elif [[ "$plugin" == "oauth1" ]]; then
+            if ! python3 -c "import keystone.auth.oauth1" 2>/dev/null; then
+                echo "警告: Keystone $plugin 认证插件导入失败"
+                ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件导入失败")
+            fi
+        elif [[ "$plugin" == "application_credential" ]]; then
+            if ! python3 -c "import keystone.auth.application_credential" 2>/dev/null; then
+                echo "警告: Keystone $plugin 认证插件导入失败"
+                ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件导入失败")
+            fi
         fi
     done
     
@@ -753,11 +775,11 @@ key_repository = /etc/keystone/fernet-keys/
 key_repository = /etc/keystone/credential-keys/
 [auth]
 methods = external,password,token,oauth1,application_credential
-password = keystone.auth.plugins.password.Password
-token = keystone.auth.plugins.token.Token
-external = keystone.auth.plugins.external.DefaultDomain
-oauth1 = keystone.auth.plugins.oauth1.OAuth
-application_credential = keystone.auth.plugins.application_credential.ApplicationCredential
+password = keystone.auth.password.Password
+token = keystone.auth.token.Token
+external = keystone.auth.external.DefaultDomain
+oauth1 = keystone.auth.oauth1.OAuth
+application_credential = keystone.auth.application_credential.ApplicationCredential
 [endpoint_filter]
 driver = sql
 [identity]
@@ -836,9 +858,31 @@ EOF
     # 验证所有认证方法是否正确配置
     AUTH_METHODS_CHECK=("password" "token" "external" "oauth1" "application_credential")
     for method in "${AUTH_METHODS_CHECK[@]}"; do
-        if ! grep -q "^$method = keystone.auth.plugins.$method" /etc/keystone/keystone.conf; then
-            echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
-            ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+        if [[ "$method" == "password" ]]; then
+            if ! grep -q "^$method = keystone.auth.password.Password" /etc/keystone/keystone.conf; then
+                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+            fi
+        elif [[ "$method" == "token" ]]; then
+            if ! grep -q "^$method = keystone.auth.token.Token" /etc/keystone/keystone.conf; then
+                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+            fi
+        elif [[ "$method" == "external" ]]; then
+            if ! grep -q "^$method = keystone.auth.external.DefaultDomain" /etc/keystone/keystone.conf; then
+                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+            fi
+        elif [[ "$method" == "oauth1" ]]; then
+            if ! grep -q "^$method = keystone.auth.oauth1.OAuth" /etc/keystone/keystone.conf; then
+                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+            fi
+        elif [[ "$method" == "application_credential" ]]; then
+            if ! grep -q "^$method = keystone.auth.application_credential.ApplicationCredential" /etc/keystone/keystone.conf; then
+                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+            fi
         fi
     done
     
@@ -985,7 +1029,7 @@ EOF
         ADMIN_PASS=$(echo "$ADMIN_PASS" | tr -d '\n\r' | tr -cd '[:print:]')
 
         # 在执行bootstrap之前，检查keystone相关包是否完整
-        if ! python3 -c "import keystone.auth.plugins.password; import keystone.auth.plugins.token; import keystone.auth.plugins.external; import keystone.auth.plugins.oauth1; import keystone.auth.plugins.application_credential" 2>/dev/null; then
+        if ! python3 -c "import keystone.auth.password; import keystone.auth.token; import keystone.auth.external; import keystone.auth.oauth1; import keystone.auth.application_credential" 2>/dev/null; then
             echo -e "\033[33m警告: keystone认证插件导入失败，尝试重新安装keystone包...\033[0m"
             if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
                 sudo dnf reinstall -y openstack-keystone python3-keystone python3-oauthlib python3-requests-oauthlib
@@ -995,7 +1039,7 @@ EOF
         fi
 
         # 特别检查application_credential插件是否存在
-        if ! python3 -c "import keystone.auth.plugins.application_credential" 2>/dev/null; then
+        if ! python3 -c "import keystone.auth.application_credential" 2>/dev/null; then
             echo -e "\033[33m警告: keystone application_credential插件缺失，尝试安装相关包...\033[0m"
             if grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null; then
                 sudo dnf install -y python3-keystone python3-oauthlib python3-requests-oauthlib python3-stevedore
@@ -1009,9 +1053,31 @@ EOF
         AUTH_PLUGINS=("password" "token" "external" "oauth1" "application_credential")
         MISSING_PLUGINS=()
         for plugin in "${AUTH_PLUGINS[@]}"; do
-            if ! python3 -c "import keystone.auth.plugins.$plugin" 2>/dev/null; then
-                echo "警告: Keystone $plugin 认证插件导入失败"
-                MISSING_PLUGINS+=("$plugin")
+            if [[ "$plugin" == "password" ]]; then
+                if ! python3 -c "import keystone.auth.password" 2>/dev/null; then
+                    echo "警告: Keystone $plugin 认证插件导入失败"
+                    MISSING_PLUGINS+=("$plugin")
+                fi
+            elif [[ "$plugin" == "token" ]]; then
+                if ! python3 -c "import keystone.auth.token" 2>/dev/null; then
+                    echo "警告: Keystone $plugin 认证插件导入失败"
+                    MISSING_PLUGINS+=("$plugin")
+                fi
+            elif [[ "$plugin" == "external" ]]; then
+                if ! python3 -c "import keystone.auth.external" 2>/dev/null; then
+                    echo "警告: Keystone $plugin 认证插件导入失败"
+                    MISSING_PLUGINS+=("$plugin")
+                fi
+            elif [[ "$plugin" == "oauth1" ]]; then
+                if ! python3 -c "import keystone.auth.oauth1" 2>/dev/null; then
+                    echo "警告: Keystone $plugin 认证插件导入失败"
+                    MISSING_PLUGINS+=("$plugin")
+                fi
+            elif [[ "$plugin" == "application_credential" ]]; then
+                if ! python3 -c "import keystone.auth.application_credential" 2>/dev/null; then
+                    echo "警告: Keystone $plugin 认证插件导入失败"
+                    MISSING_PLUGINS+=("$plugin")
+                fi
             fi
         done
 
@@ -1027,19 +1093,41 @@ EOF
             # 再次检查插件
             echo "重新检查认证插件..."
             for plugin in "${AUTH_PLUGINS[@]}"; do
-                if ! python3 -c "import keystone.auth.plugins.$plugin" 2>/dev/null; then
-                    echo -e "\033[31m严重错误: Keystone $plugin 认证插件仍然无法导入\033[0m"
-                    ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件仍然无法导入")
+                if [[ "$plugin" == "password" ]]; then
+                    if ! python3 -c "import keystone.auth.password" 2>/dev/null; then
+                        echo -e "\033[31m严重错误: Keystone $plugin 认证插件仍然无法导入\033[0m"
+                        ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件仍然无法导入")
+                    fi
+                elif [[ "$plugin" == "token" ]]; then
+                    if ! python3 -c "import keystone.auth.token" 2>/dev/null; then
+                        echo -e "\033[31m严重错误: Keystone $plugin 认证插件仍然无法导入\033[0m"
+                        ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件仍然无法导入")
+                    fi
+                elif [[ "$plugin" == "external" ]]; then
+                    if ! python3 -c "import keystone.auth.external" 2>/dev/null; then
+                        echo -e "\033[31m严重错误: Keystone $plugin 认证插件仍然无法导入\033[0m"
+                        ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件仍然无法导入")
+                    fi
+                elif [[ "$plugin" == "oauth1" ]]; then
+                    if ! python3 -c "import keystone.auth.oauth1" 2>/dev/null; then
+                        echo -e "\033[31m严重错误: Keystone $plugin 认证插件仍然无法导入\033[0m"
+                        ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件仍然无法导入")
+                    fi
+                elif [[ "$plugin" == "application_credential" ]]; then
+                    if ! python3 -c "import keystone.auth.application_credential" 2>/dev/null; then
+                        echo -e "\033[31m严重错误: Keystone $plugin 认证插件仍然无法导入\033[0m"
+                        ERROR_LOG+=("[认证插件] Keystone $plugin 认证插件仍然无法导入")
+                    fi
                 fi
             done
         fi
 
         # 特别验证application_credential插件
         echo "特别验证application_credential插件..."
-        if python3 -c "import keystone.auth.plugins.application_credential" 2>/dev/null; then
+        if python3 -c "import keystone.auth.application_credential" 2>/dev/null; then
             echo "✓ application_credential插件可以正常导入"
             # 验证插件类是否存在
-            if python3 -c "from keystone.auth.plugins.application_credential import ApplicationCredential" 2>/dev/null; then
+            if python3 -c "from keystone.auth.application_credential import ApplicationCredential" 2>/dev/null; then
                 echo "✓ ApplicationCredential类可以正常导入"
             else
                 echo -e "\033[31m错误: ApplicationCredential类无法导入\033[0m"
@@ -1076,7 +1164,7 @@ EOF
             # 特别检查application_credential配置段的内容
             if grep -q "^\[application_credential\]" /etc/keystone/keystone.conf; then
                 # 检查driver是否设置为sql
-                if ! grep -q "^driver = sql" /etc/keystone/keystone.conf | grep -A 5 "\[application_credential\]"; then
+                if ! grep -A 5 "\[application_credential\]" /etc/keystone/keystone.conf | grep -q "^driver = sql"; then
                     echo -e "\033[33m警告: [application_credential]段中driver未设置为sql\033[0m"
                     ERROR_LOG+=("[配置验证] [application_credential]段中driver未设置为sql")
                 fi
