@@ -748,31 +748,35 @@ if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf ins
         # 检查每个认证方法是否都已正确配置
         AUTH_METHODS=("password" "token" "external" "oauth1" "application_credential")
         for method in "${AUTH_METHODS[@]}"; do
-            if ! grep -q "^$method = keystone.auth.plugins.$method" /etc/keystone/keystone.conf; then
-                echo "警告: Keystone配置文件中缺少 $method 认证方法配置"
-                ERROR_LOG+=("[配置验证] Keystone配置文件中缺少 $method 认证方法配置")
-            fi
-        done
-    else
-        echo "警告: Keystone配置文件不存在"
-        ERROR_LOG+=("[配置验证] Keystone配置文件不存在")
+# 修复Keystone配置文件函数
+fix_keystone_config() {
+    echo "修复Keystone配置文件以解决编码和插件加载问题..."
+    
+    # 备份现有配置文件
+    if [ -f /etc/keystone/keystone.conf ]; then
+        cp /etc/keystone/keystone.conf /etc/keystone/keystone.conf.backup
     fi
     
-    # 生成keystone配置文件
+    # 创建新的配置文件，确保使用纯ASCII字符避免编码问题
     cat > /etc/keystone/keystone.conf << EOF
 [DEFAULT]
 log_dir = /var/log/keystone
 log_file = keystone.log
 debug = True
 verbose = True
+
 [database]
 connection = mysql+pymysql://keystone:${KEYSTONE_DBPASS}@${HOST_IP}:3306/keystone
+
 [token]
 provider = fernet
+
 [fernet_tokens]
 key_repository = /etc/keystone/fernet-keys/
+
 [credential]
 key_repository = /etc/keystone/credential-keys/
+
 [auth]
 methods = external,password,token,oauth1,application_credential
 password = keystone.auth.password.Password
@@ -780,164 +784,257 @@ token = keystone.auth.token.Token
 external = keystone.auth.external.DefaultDomain
 oauth1 = keystone.auth.oauth1.OAuth
 application_credential = keystone.auth.application_credential.ApplicationCredential
+
 [endpoint_filter]
 driver = sql
+
 [identity]
 driver = sql
+
 [resource]
 driver = sql
+
 [assignment]
 driver = sql
+
 [role]
 driver = sql
+
 [policy]
 driver = sql
+
 [application_credential]
 driver = sql
+
 [oauth1]
 driver = sql
+
 [ec2]
 driver = sql
+
 [trust]
 driver = sql
+
 [federation]
 driver = sql
+
 [resource_cache]
 driver = sql
+
 [domain_config]
 driver = sql
+
 [catalog]
 driver = sql
+
 [credential_provider]
 driver = sql
+
 [identity_mapping]
 driver = sql
+
 [role_assignment]
 driver = sql
+
 [user]
 driver = sql
+
 [group]
 driver = sql
+
 [project]
 driver = sql
+
 [region]
 driver = sql
+
 [service]
 driver = sql
+
 [endpoint]
 driver = sql
+
 [wsgi]
 application = keystone.server.wsgi_app:init_application
-# 显式禁用LDAP配置以防止驱动加载错误
-[ldap]
-[identity_mapping]
+
 [cache]
 EOF
 
-    # 验证配置文件中的关键插件路径
-    if ! grep -q "password = keystone.auth.plugins.password.Password" /etc/keystone/keystone.conf; then
-        echo -e "\033[31m错误: keystone.conf中password插件路径配置不正确\033[0m"
-        ERROR_LOG+=("[配置验证] keystone.conf中password插件路径配置不正确")
-    fi
-
-    # 验证配置文件是否成功创建
-    if [ ! -f /etc/keystone/keystone.conf ]; then
-        echo "警告: keystone.conf配置文件创建失败，继续执行"
-        ERROR_LOG+=("[配置生成] keystone.conf配置文件创建失败")
-    fi
-
-    # 验证配置文件格式完整性
-    if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@${HOST_IP}:3306/keystone" /etc/keystone/keystone.conf; then
-        echo -e "\\033[31m错误: keystone.conf配置文件生成失败，数据库连接字符串不完整\\033[0m"
-        echo "生成的配置文件内容："
-        cat /etc/keystone/keystone.conf
-        echo "警告: keystone.conf配置文件生成失败，继续执行"
-        ERROR_LOG+=("[配置生成] keystone.conf配置文件生成失败")
-    fi
-
-    # 验证所有认证方法是否正确配置
-    AUTH_METHODS_CHECK=("password" "token" "external" "oauth1" "application_credential")
-    for method in "${AUTH_METHODS_CHECK[@]}"; do
-        if [[ "$method" == "password" ]]; then
-            if ! grep -q "^$method = keystone.auth.password.Password" /etc/keystone/keystone.conf; then
-                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
-                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
-            fi
-        elif [[ "$method" == "token" ]]; then
-            if ! grep -q "^$method = keystone.auth.token.Token" /etc/keystone/keystone.conf; then
-                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
-                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
-            fi
-        elif [[ "$method" == "external" ]]; then
-            if ! grep -q "^$method = keystone.auth.external.DefaultDomain" /etc/keystone/keystone.conf; then
-                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
-                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
-            fi
-        elif [[ "$method" == "oauth1" ]]; then
-            if ! grep -q "^$method = keystone.auth.oauth1.OAuth" /etc/keystone/keystone.conf; then
-                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
-                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
-            fi
-        elif [[ "$method" == "application_credential" ]]; then
-            if ! grep -q "^$method = keystone.auth.application_credential.ApplicationCredential" /etc/keystone/keystone.conf; then
-                echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
-                ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
-            fi
-        fi
-    done
+    # 设置正确的权限
+    chown root:keystone /etc/keystone/keystone.conf
+    chmod 640 /etc/keystone/keystone.conf
     
-    if command -v keystone-manage &> /dev/null; then
-        # 确保数据库服务已启动
+    echo "Keystone配置文件修复完成"
+}
+
+# 修复Python依赖库版本冲突
+fix_python_dependencies() {
+    echo "检查并修复Python依赖库版本冲突..."
+    
+    # 确保pip已安装
+    install_pip_if_needed
+    
+    # 使用pip3优先处理（如果存在）
+    if command -v pip3 &> /dev/null; then
+        # 卸载冲突的库
+        pip3 uninstall -y urllib3 chardet >/dev/null 2>&1 || true
+        # 重新安装requests
+        pip3 install requests --upgrade >/dev/null 2>&1 || echo "警告: 使用pip3升级requests失败"
+    elif command -v pip &> /dev/null; then
+        # 使用pip处理（可能是pip2）
+        pip uninstall -y urllib3 chardet >/dev/null 2>&1 || true
+        pip install requests --upgrade >/dev/null 2>&1 || echo "警告: 使用pip升级requests失败"
+    else
+        echo "警告: 系统中未找到pip命令，跳过依赖库修复"
+        ERROR_LOG+=("[依赖修复] 系统中未找到pip命令")
+        return 1
+    fi
+    
+    # 验证修复结果
+    if python3 -c "import requests; import urllib3" 2>/dev/null; then
+        echo "✓ Python依赖库版本冲突已修复"
+    else
+        echo "警告: Python依赖库版本冲突修复失败"
+        ERROR_LOG+=("[依赖修复] Python依赖库版本冲突修复失败")
+    fi
+}
+
+# 安装pip函数
+install_pip_if_needed() {
+    if ! command -v pip3 &> /dev/null && ! command -v pip &> /dev/null; then
+        echo "警告: 系统中未找到pip命令，正在安装..."
+        if command -v apt-get &> /dev/null; then
+            apt-get update
+            apt-get install -y python3-pip
+        elif command -v yum &> /dev/null; then
+            yum install -y python3-pip
+        elif command -v dnf &> /dev/null; then
+            dnf install -y python3-pip
+        else
+            echo "错误: 无法确定包管理器，无法安装pip"
+            ERROR_LOG+=("[依赖修复] 无法确定包管理器，无法安装pip")
+            return 1
+        fi
+    fi
+}
+
+# 验证配置文件中的关键插件路径
+if ! grep -q "password = keystone.auth.password.Password" /etc/keystone/keystone.conf; then
+    echo -e "\033[31m错误: keystone.conf中password插件路径配置不正确\033[0m"
+    ERROR_LOG+=("[配置验证] keystone.conf中password插件路径配置不正确")
+fi
+
+# 验证配置文件是否成功创建
+if [ ! -f /etc/keystone/keystone.conf ]; then
+    echo "警告: keystone.conf配置文件创建失败，继续执行"
+    ERROR_LOG+=("[配置生成] keystone.conf配置文件创建失败")
+fi
+
+# 验证配置文件格式完整性
+if ! grep -q "connection = mysql+pymysql://keystone:[^@]*@${HOST_IP}:3306/keystone" /etc/keystone/keystone.conf; then
+    echo -e "\\033[31m错误: keystone.conf配置文件生成失败，数据库连接字符串不完整\\033[0m"
+    echo "生成的配置文件内容："
+    cat /etc/keystone/keystone.conf
+    echo "警告: keystone.conf配置文件生成失败，继续执行"
+    ERROR_LOG+=("[配置生成] keystone.conf配置文件生成失败")
+fi
+
+# 验证所有认证方法是否正确配置
+AUTH_METHODS_CHECK=("password" "token" "external" "oauth1" "application_credential")
+for method in "${AUTH_METHODS_CHECK[@]}"; do
+    if [[ "$method" == "password" ]]; then
+        if ! grep -q "^$method = keystone.auth.password.Password" /etc/keystone/keystone.conf; then
+            echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+            ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+        fi
+    elif [[ "$method" == "token" ]]; then
+        if ! grep -q "^$method = keystone.auth.token.Token" /etc/keystone/keystone.conf; then
+            echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+            ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+        fi
+    elif [[ "$method" == "external" ]]; then
+        if ! grep -q "^$method = keystone.auth.external.DefaultDomain" /etc/keystone/keystone.conf; then
+            echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+            ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+        fi
+    elif [[ "$method" == "oauth1" ]]; then
+        if ! grep -q "^$method = keystone.auth.oauth1.OAuth" /etc/keystone/keystone.conf; then
+            echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+            ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+        fi
+    elif [[ "$method" == "application_credential" ]]; then
+        if ! grep -q "^$method = keystone.auth.application_credential.ApplicationCredential" /etc/keystone/keystone.conf; then
+            echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+            ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+        fi
+    fi
+done
+    
+# 调用修复函数确保配置文件正确
+fix_keystone_config
+    
+if command -v keystone-manage &> /dev/null; then
+    # 确保数据库服务已启动
+    if ! systemctl is-active --quiet mariadb; then
+        echo -e "\033[33m警告: MariaDB服务未运行，正在启动...\033[0m"
+        systemctl start mariadb
+        sleep 5
         if ! systemctl is-active --quiet mariadb; then
-            echo -e "\033[33m警告: MariaDB服务未运行，正在启动...\033[0m"
-            systemctl start mariadb
-            sleep 5
-            if ! systemctl is-active --quiet mariadb; then
-                echo "警告: MariaDB服务启动失败，请检查数据库服务状态，继续执行"
-                ERROR_LOG+=("[数据库服务] MariaDB服务启动失败")
-            fi
+            echo "警告: MariaDB服务启动失败，请检查数据库服务状态，继续执行"
+            ERROR_LOG+=("[数据库服务] MariaDB服务启动失败")
         fi
+    fi
 
-        echo "正在同步keystone数据库..."
-        # 在执行db_sync前再次检查依赖库兼容性
-        if ! python3 -c "import requests; import urllib3" 2>/dev/null; then
-            echo "警告: Python依赖库可能存在版本冲突，尝试修复..."
-            if command -v pip3 &> /dev/null; then
-                pip3 uninstall -y urllib3 chardet >/dev/null 2>&1
-                pip3 install requests >/dev/null 2>&1
-            elif command -v pip &> /dev/null; then
-                pip uninstall -y urllib3 chardet >/dev/null 2>&1
-                pip install requests >/dev/null 2>&1
-            fi
+    echo "正在同步keystone数据库..."
+    # 在执行db_sync前再次检查依赖库兼容性
+    if ! python3 -c "import requests; import urllib3" 2>/dev/null; then
+        echo "警告: Python依赖库可能存在版本冲突，尝试修复..."
+        if command -v pip3 &> /dev/null; then
+            pip3 uninstall -y urllib3 chardet >/dev/null 2>&1
+            pip3 install requests >/dev/null 2>&1
+        elif command -v pip &> /dev/null; then
+            pip uninstall -y urllib3 chardet >/dev/null 2>&1
+            pip install requests >/dev/null 2>&1
         fi
+    fi
         
-        if ! su -s /bin/sh -c "keystone-manage db_sync" keystone; then
-            echo -e "\033[31m错误详情：$(mysql -u root -e \"SHOW ERRORS;\" 2>/dev/null)\033[0m"
-            echo "警告: keystone数据库同步失败，请检查数据库连接和权限，继续执行"
-            ERROR_LOG+=("[keystone数据库同步] keystone数据库同步失败")
-        fi
+    if ! su -s /bin/sh -c "keystone-manage db_sync" keystone; then
+        echo -e "\033[31m错误详情：$(mysql -u root -e \"SHOW ERRORS;\" 2>/dev/null)\033[0m"
+        echo "警告: keystone数据库同步失败，请检查数据库连接和权限，继续执行"
+        ERROR_LOG+=("[keystone数据库同步] keystone数据库同步失败")
+    fi
 
-        keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone || \
-            echo "警告: keystone fernet 设置失败，继续执行" && ERROR_LOG+=("[keystone初始化] keystone fernet 设置失败")
-    else
-        echo "警告: keystone-manage 命令未找到，继续执行"
-        ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
-    fi
+    keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone || \
+        echo "警告: keystone fernet 设置失败，继续执行" && ERROR_LOG+=("[keystone初始化] keystone fernet 设置失败")
+else
+    echo "警告: keystone-manage 命令未找到，继续执行"
+    ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
+fi
     
-    # 确保httpd配置中的ServerName使用IP地址
-    if grep -q "ServerName" /etc/httpd/conf/httpd.conf; then
-        sed -i "s/ServerName.*/ServerName $HOST_IP/" /etc/httpd/conf/httpd.conf
-    else
-        echo "ServerName $HOST_IP" >> /etc/httpd/conf/httpd.conf
-    fi
+# 重启httpd服务以应用配置更改
+echo "重启httpd服务..."
+systemctl restart httpd
+if [ $? -eq 0 ]; then
+    echo -e "\033[32m✓ httpd服务重启成功\033[0m"
+else
+    echo -e "\033[31m✗ httpd服务重启失败\033[0m"
+    ERROR_LOG+=("[服务重启] httpd服务重启失败")
+fi
     
-    # 添加额外的ServerName配置以避免Apache警告
-    if ! grep -q "ServerName controller" /etc/httpd/conf/httpd.conf; then
-        echo "ServerName controller" >> /etc/httpd/conf/httpd.conf
-    fi
+# 确保httpd配置中的ServerName使用IP地址
+if grep -q "ServerName" /etc/httpd/conf/httpd.conf; then
+    sed -i "s/ServerName.*/ServerName $HOST_IP/" /etc/httpd/conf/httpd.conf
+else
+    echo "ServerName $HOST_IP" >> /etc/httpd/conf/httpd.conf
+fi
     
-    # 创建自定义keystone WSGI配置文件
-    cat > /etc/httpd/conf.d/wsgi-keystone.conf << EOF
+# 添加额外的ServerName配置以避免Apache警告
+if ! grep -q "ServerName controller" /etc/httpd/conf/httpd.conf; then
+    echo "ServerName controller" >> /etc/httpd/conf/httpd.conf
+fi
+    
+# 创建自定义keystone WSGI配置文件
+cat > /etc/httpd/conf.d/wsgi-keystone.conf << EOF
 Listen 5000
 <VirtualHost *:5000>
     WSGIDaemonProcess keystone-public processes=5 threads=1 user=keystone group=keystone display-name=%{GROUP}
@@ -1164,7 +1261,7 @@ EOF
             # 特别检查application_credential配置段的内容
             if grep -q "^\[application_credential\]" /etc/keystone/keystone.conf; then
                 # 检查driver是否设置为sql
-                if ! grep -A 5 "\[application_credential\]" /etc/keystone/keystone.conf | grep -q "^driver = sql"; then
+                if ! grep -q -A 5 "\[application_credential\]" /etc/keystone/keystone.conf | grep -q "^driver = sql"; then
                     echo -e "\033[33m警告: [application_credential]段中driver未设置为sql\033[0m"
                     ERROR_LOG+=("[配置验证] [application_credential]段中driver未设置为sql")
                 fi
@@ -1318,9 +1415,6 @@ if ! openstack token issue &> /dev/null; then
     ss -tuln | grep ':5000' || echo "端口5000未被监听"
     echo "警告: keystone bootstrap 失败，请检查/var/log/keystone/keystone.log，继续执行"
     ERROR_LOG+=("[keystone初始化] keystone bootstrap 失败")
-else
-    echo "警告: keystone-manage 命令未找到，继续执行"
-    ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
 fi
 
 echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
@@ -1686,6 +1780,18 @@ if ! openstack token issue &> /dev/null; then
     fi
     echo "警告: nova服务依赖的keystone服务未就绪，继续执行"
     ERROR_LOG+=("[服务依赖检查] nova服务依赖的keystone服务未就绪")
+    
+    # 尝试修复Keystone服务
+    echo "尝试修复Keystone服务..."
+    systemctl restart httpd
+    sleep 5
+    
+    # 再次检查
+    if ! openstack token issue &> /dev/null; then
+        echo "警告: Keystone服务修复失败，继续执行"
+    else
+        echo -e "\033[32m✓ Keystone服务修复成功\033[0m"
+    fi
 fi
 
 # 检查数据库是否可用
