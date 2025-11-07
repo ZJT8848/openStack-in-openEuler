@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#!/bin/bash
-
 # ==========================================================================
 # 脚本作者： ZJT8848,链接：https://github.com/ZJT8848/openStack-in-openEuler
 # 部分代码来源：作者 huhy,链接：https://www.cnblogs.com/hoyeong/p/18793119
@@ -66,35 +64,6 @@ TIME_SERVER="controller"
 LOG_FILE="/root/init.log"
 ERRORS=()  # 用于收集错误步骤
 
-# 进度条相关变量
-TOTAL_STEPS=16
-CURRENT_STEP=0
-
-# 显示进度条的函数
-show_progress() {
-    local percentage=$((CURRENT_STEP * 100 / TOTAL_STEPS))
-    local completed=$((CURRENT_STEP * 50 / TOTAL_STEPS))
-    local remaining=$((50 - completed))
-    
-    # 生成进度条
-    local bar=""
-    for ((i=0; i<completed; i++)); do
-        bar="${bar}#"
-    done
-    for ((i=0; i<remaining; i++)); do
-        bar="${bar}-"
-    done
-    
-    # 保存光标位置并移动到屏幕底部
-    echo -ne "\033[s\033[999;1H\033[2K[${bar}] ${percentage}% (${CURRENT_STEP}/${TOTAL_STEPS})\033[u"
-}
-
-# 更新进度的函数
-update_progress() {
-    CURRENT_STEP=$((CURRENT_STEP + 1))
-    show_progress
-}
-
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "$LOG_FILE"
 }
@@ -120,7 +89,6 @@ run_step() {
     log "🚀 开始：$step_name"
     if "$@"; then
         log "✅ 完成：$step_name"
-        update_progress
     else
         error "$step_name 执行失败"
     fi
@@ -207,7 +175,8 @@ run_step "配置时间同步 (chrony)" bash -c "
 "
 
 # --- 安装 OpenStack Train Yum 源 ---
-run_step "安装 OpenStack Train 源" yum install -y openstack-release-train
+
+yum install -y openstack-release-train
 
 # --- 创建全局环境变量文件 ---
 cat > /root/openrc.sh << EOF
@@ -237,9 +206,6 @@ maxvlan=1000
 EOF
 
 source /root/openrc.sh
-
-# 初始化进度条显示
-show_progress
 
 # --- 安装基础服务（MySQL/RabbitMQ/Memcached）---
 cat > /root/iaas-install-mysql.sh << 'EOF'
@@ -819,8 +785,6 @@ bash /root/fix-nova-cells.sh
 # ==============================
 # 最终总结
 # ==============================
-# 清除进度条
-echo -ne "\033[s\033[999;1H\033[2K\033[u"
 
 echo ""
 echo "###############################################################"
