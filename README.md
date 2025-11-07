@@ -7,3 +7,6 @@
 
 
 这是一个实现openeuler一键部署openstack的脚本
+
+
+bata切勿使用，还在维护
