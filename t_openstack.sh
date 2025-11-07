@@ -178,6 +178,7 @@ run_step "安装 MySQL、RabbitMQ 和 Memcached" bash -c '
 source /root/openrc.sh
 
 yum install -y mariadb mariadb-server python3-PyMySQL
+
 cat > /etc/my.cnf.d/99-openstack.cnf << EOFF
 [mysqld]
 bind-address = 0.0.0.0
@@ -188,20 +189,45 @@ collation-server = utf8_general_ci
 character-set-server = utf8
 EOFF
 
-systemctl enable --now mariadb
-mysql -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$DB_PASS'\'';"
-mysql -uroot -p$DB_PASS -e "FLUSH PRIVILEGES"
-systemctl restart mariadb
+systemctl enable mariadb
+systemctl start mariadb
 
+# 等待 MariaDB 启动完成
+sleep 5
+
+# 尝试无密码登录（首次启动通常允许）
+if mysql -e "SELECT 1;" &>/dev/null; then
+    # 设置 root 密码
+    mysql -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$DB_PASS'\'';"
+    mysql -uroot -p$DB_PASS -e "FLUSH PRIVILEGES"
+else
+    echo "❌ 无法以无密码方式连接 MariaDB，尝试安全模式初始化..."
+    systemctl stop mariadb
+    mysqld_safe --skip-grant-tables --skip-networking &
+    sleep 10
+    mysql -e "FLUSH PRIVILEGES; ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$DB_PASS'\'';"
+    killall mysqld_safe
+    systemctl start mariadb
+fi
+
+# 验证 MariaDB 是否可用
+if ! mysql -uroot -p$DB_PASS -e "SELECT 1;" &>/dev/null; then
+    echo "❌ MariaDB 无法通过密码登录，请检查配置！"
+    exit 1
+fi
+
+# RabbitMQ
 yum install -y rabbitmq-server
 systemctl enable --now rabbitmq-server
 rabbitmqctl add_user $RABBIT_USER $RABBIT_PASS
 rabbitmqctl set_permissions $RABBIT_USER ".*" ".*" ".*"
-systemctl restart rabbitmq-server
 
+# Memcached
 yum install -y memcached python3-memcached
 sed -i -e "s/OPTIONS=.*/OPTIONS=\"-l 127.0.0.1,::1,$HOST_NAME\"/g" /etc/sysconfig/memcached
 systemctl enable --now memcached
+
+echo "✅ MariaDB、RabbitMQ、Memcached 安装并验证成功"
 EOF
 
     chmod +x /root/iaas-install-mysql.sh
