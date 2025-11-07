@@ -1,12 +1,8 @@
 #!/bin/bash
 
 # ==============================
-# OpenStack Train All-in-One 自动化部署脚本
-# 合并自用户提供的多段脚本
-# 运行后自动完成：环境初始化 + 基础服务 + Keystone/Glance/Placement/Nova/Neutron/Horizon 安装
+# OpenStack Train All-in-One 自动化部署脚本（带进度提示 + 中文错误汇总）
 # ==============================
-
-set -e
 
 # --- 配置区 ---
 NODES=("192.168.1.204 controller")
@@ -17,9 +13,15 @@ HOST_IP="192.168.1.204"
 HOST_NAME="controller"
 
 LOG_FILE="/root/init.log"
+ERRORS=()  # 用于收集错误步骤
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "$LOG_FILE"
+}
+
+error() {
+    ERRORS+=("$1")
+    log "⚠️ 错误: $1"
 }
 
 # --- 欢迎界面 ---
@@ -29,94 +31,122 @@ cat > /etc/motd <<EOF
 ################################
 EOF
 
+# ==============================
+# 步骤包装函数：自动打印开始/结束/捕获错误
+# 使用方式：run_step "步骤名" 命令 [参数...]
+# ==============================
+run_step() {
+    local step_name="$1"
+    shift
+    log "🚀 开始：$step_name"
+    if "$@"; then
+        log "✅ 完成：$step_name"
+    else
+        error "$step_name 执行失败"
+    fi
+}
+
 # --- 禁用 SELinux ---
-sed -i 's/SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
-setenforce 0
+run_step "禁用 SELinux" bash -c '
+    sed -i "s/SELINUX=.*/SELINUX=disabled/g" /etc/selinux/config
+    setenforce 0
+'
 
 # --- 关闭 firewalld ---
-systemctl stop firewalld
-systemctl disable firewalld >> /dev/null 2>&1
+run_step "关闭 firewalld" bash -c '
+    systemctl stop firewalld
+    systemctl disable firewalld >> /dev/null 2>&1
+'
 
 # --- 清空 iptables ---
-yum install -y iptables-services
-systemctl restart iptables
-iptables -F
-iptables -X
-iptables -Z
-/usr/sbin/iptables-save
-systemctl stop iptables
-systemctl disable iptables
+run_step "清空并禁用 iptables" bash -c '
+    yum install -y iptables-services
+    systemctl restart iptables
+    iptables -F
+    iptables -X
+    iptables -Z
+    /usr/sbin/iptables-save
+    systemctl stop iptables
+    systemctl disable iptables
+'
 
 # --- 优化 SSH ---
-sed -i -e 's/#UseDNS yes/UseDNS no/g' -e 's/GSSAPIAuthentication yes/GSSAPIAuthentication no/g' /etc/ssh/sshd_config
-systemctl reload sshd
+run_step "优化 SSH 配置" bash -c '
+    sed -i -e "s/#UseDNS yes/UseDNS no/g" -e "s/GSSAPIAuthentication yes/GSSAPIAuthentication no/g" /etc/ssh/sshd_config
+    systemctl reload sshd
+'
 
 # --- 设置主机名 ---
-current_ip=$(hostname -I | awk '{print $1}')
-for node in "${NODES[@]}"; do
-  ip=$(echo "$node" | awk '{print $1}')
-  hostname=$(echo "$node" | awk '{print $2}')
-  if [[ "$current_ip" == "$ip" ]]; then
-    if [[ "$(hostname)" != "$hostname" ]]; then
-      hostnamectl set-hostname "$hostname"
-      log "Hostname set to $hostname"
-    fi
-    break
-  fi
-done
+run_step "设置主机名" bash -c '
+    current_ip=$(hostname -I | awk "{print \$1}")
+    for node in "${NODES[@]}"; do
+        ip=$(echo "$node" | awk "{print \$1}")
+        hostname=$(echo "$node" | awk "{print \$2}")
+        if [[ "$current_ip" == "$ip" ]]; then
+            if [[ "$(hostname)" != "$hostname" ]]; then
+                hostnamectl set-hostname "$hostname"
+                log "Hostname set to $hostname"
+            fi
+            break
+        fi
+    done
+'
 
 # --- 更新 /etc/hosts ---
-for node in "${NODES[@]}"; do
-  ip=$(echo "$node" | awk '{print $1}')
-  hostname=$(echo "$node" | awk '{print $2}')
-  if ! grep -q "$ip $hostname" /etc/hosts; then
-    echo "$ip $hostname" >> /etc/hosts
-    log "Added $hostname to /etc/hosts"
-  fi
-done
+run_step "更新 /etc/hosts" bash -c '
+    for node in "${NODES[@]}"; do
+        ip=$(echo "$node" | awk "{print \$1}")
+        hostname=$(echo "$node" | awk "{print \$2}")
+        if ! grep -q "$ip $hostname" /etc/hosts; then
+            echo "$ip $hostname" >> /etc/hosts
+            log "Added $hostname to /etc/hosts"
+        fi
+    done
+'
 
 # --- SSH 免密登录准备 ---
-if [[ ! -s ~/.ssh/id_rsa.pub ]]; then
-    ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa -q -b 2048
-    log "Generated SSH key"
-fi
+run_step "配置 SSH 免密登录" bash -c '
+    if [[ ! -s ~/.ssh/id_rsa.pub ]]; then
+        ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa -q -b 2048
+        log "Generated SSH key"
+    fi
 
-if ! command -v sshpass &> /dev/null; then
-    yum install -y sshpass
-    log "Installed sshpass"
-fi
+    if ! command -v sshpass &> /dev/null; then
+        yum install -y sshpass
+        log "Installed sshpass"
+    fi
 
-for node in "${NODES[@]}"; do
-    ip=$(echo "$node" | awk '{print $1}')
-    hostname=$(echo "$node" | awk '{print $2}')
-    log "Copying SSH key to $hostname ($ip)"
-    sshpass -p "$HOST_PASS" ssh-copy-id -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa.pub "$hostname" || true
-done
+    for node in "${NODES[@]}"; do
+        ip=$(echo "$node" | awk "{print \$1}")
+        hostname=$(echo "$node" | awk "{print \$2}")
+        log "Copying SSH key to $hostname ($ip)"
+        sshpass -p "'"$HOST_PASS"'" ssh-copy-id -o StrictHostKeyChecking=no -i /root/.ssh/id_rsa.pub "$hostname" || true
+    done
+'
 
 # --- 时间同步 (chrony) ---
-name=$(hostname)
-if [[ "$name" == "$TIME_SERVER" ]]; then
-    sed -i '3,4s/^/#/g' /etc/chrony.conf
-    sed -i "7s/^/server $TIME_SERVER iburst/g" /etc/chrony.conf
-    echo "allow $TIME_SERVER_IP" >> /etc/chrony.conf
-    echo "local stratum 10" >> /etc/chrony.conf
-else
-    sed -i '3,4s/^/#/g' /etc/chrony.conf
-    sed -i "7s/^/server $TIME_SERVER iburst/g" /etc/chrony.conf
-fi
-systemctl restart chronyd
+run_step "配置时间同步 (chrony)" bash -c '
+    name=$(hostname)
+    if [[ "$name" == "'"$TIME_SERVER"'" ]]; then
+        sed -i "3,4s/^/#/g" /etc/chrony.conf
+        sed -i "7s/^/server '"$TIME_SERVER"' iburst/g" /etc/chrony.conf
+        echo "allow '"$TIME_SERVER_IP"'" >> /etc/chrony.conf
+        echo "local stratum 10" >> /etc/chrony.conf
+    else
+        sed -i "3,4s/^/#/g" /etc/chrony.conf
+        sed -i "7s/^/server '"$TIME_SERVER"' iburst/g" /etc/chrony.conf
+    fi
+    systemctl restart chronyd
+'
 
 # --- 安装 OpenStack Train Yum 源 ---
-yum install -y openstack-release-train
+run_step "安装 OpenStack Train 源" yum install -y openstack-release-train
 
 # --- 创建全局环境变量文件 ---
 cat > /root/openrc.sh << EOF
 HOST_IP=$HOST_IP
 HOST_PASS=$HOST_PASS
 HOST_NAME=$HOST_NAME
-HOST_IP_NODE=
-HOST_PASS_NODE=
-HOST_NAME_NODE=
 RABBIT_USER=openstack
 RABBIT_PASS=$HOST_PASS
 DB_PASS=$HOST_PASS
@@ -141,14 +171,12 @@ EOF
 
 source /root/openrc.sh
 
-# --- 创建并执行 iaas-install-mysql.sh ---
-log "Installing MySQL, RabbitMQ, Memcached..."
-
-cat > /root/iaas-install-mysql.sh << 'EOF'
+# --- 安装基础服务（MySQL/RabbitMQ/Memcached）---
+run_step "安装 MySQL、RabbitMQ 和 Memcached" bash -c '
+    cat > /root/iaas-install-mysql.sh << '\''EOF'\''
 #!/bin/bash
 source /root/openrc.sh
 
-# 安装数据库服务
 yum install -y mariadb mariadb-server python3-PyMySQL
 cat > /etc/my.cnf.d/99-openstack.cnf << EOFF
 [mysqld]
@@ -161,36 +189,34 @@ character-set-server = utf8
 EOFF
 
 systemctl enable --now mariadb
-mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$DB_PASS';"
+mysql -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''$DB_PASS'\'';"
 mysql -uroot -p$DB_PASS -e "FLUSH PRIVILEGES"
 systemctl restart mariadb
 
-# 安装消息队列服务
 yum install -y rabbitmq-server
 systemctl enable --now rabbitmq-server
 rabbitmqctl add_user $RABBIT_USER $RABBIT_PASS
 rabbitmqctl set_permissions $RABBIT_USER ".*" ".*" ".*"
 systemctl restart rabbitmq-server
 
-# 安装缓存服务
 yum install -y memcached python3-memcached
 sed -i -e "s/OPTIONS=.*/OPTIONS=\"-l 127.0.0.1,::1,$HOST_NAME\"/g" /etc/sysconfig/memcached
 systemctl enable --now memcached
 EOF
 
-chmod +x /root/iaas-install-mysql.sh
-bash /root/iaas-install-mysql.sh
+    chmod +x /root/iaas-install-mysql.sh
+    bash /root/iaas-install-mysql.sh
+'
 
-# --- 创建并执行 iaas-install-keystone.sh ---
-log "Installing Keystone..."
-
-cat > /root/iaas-install-keystone.sh << 'EOF'
+# --- Keystone 安装 ---
+run_step "安装 Keystone 身份认证服务" bash -c '
+    cat > /root/iaas-install-keystone.sh << '\''EOF'\''
 #!/bin/bash
 source /root/openrc.sh
 
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS keystone;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' IDENTIFIED BY '$KEYSTONE_DBPASS';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%' IDENTIFIED BY '$KEYSTONE_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO '\''keystone'\''@'\''localhost'\'' IDENTIFIED BY '\''$KEYSTONE_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON keystone.* TO '\''keystone'\''@'\''%'\'' IDENTIFIED BY '\''$KEYSTONE_DBPASS'\'';"
 
 yum install -y openstack-keystone httpd mod_wsgi
 cp /etc/keystone/keystone.conf{,.bak}
@@ -233,20 +259,20 @@ openstack project create --domain default --description "Service Project" servic
 openstack token issue
 EOF
 
-chmod +x /root/iaas-install-keystone.sh
-bash /root/iaas-install-keystone.sh
+    chmod +x /root/iaas-install-keystone.sh
+    bash /root/iaas-install-keystone.sh
+'
 
-# --- 创建并执行 iaas-install-glance.sh ---
-log "Installing Glance..."
-
-cat > /root/iaas-install-glance.sh << 'EOF'
+# --- Glance 安装 ---
+run_step "安装 Glance 镜像服务" bash -c '
+    cat > /root/iaas-install-glance.sh << '\''EOF'\''
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
 
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS glance;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'localhost' IDENTIFIED BY '$GLANCE_DBPASS';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO 'glance'@'%' IDENTIFIED BY '$GLANCE_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO '\''glance'\''@'\''localhost'\'' IDENTIFIED BY '\''$GLANCE_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON glance.* TO '\''glance'\''@'\''%'\'' IDENTIFIED BY '\''$GLANCE_DBPASS'\'';"
 
 openstack user create --domain $DOMAIN_NAME --password $GLANCE_PASS glance
 openstack role add --project service --user glance admin
@@ -282,20 +308,20 @@ su -s /bin/sh -c "glance-manage db_sync" glance
 systemctl enable --now openstack-glance-api.service
 EOF
 
-chmod +x /root/iaas-install-glance.sh
-bash /root/iaas-install-glance.sh
+    chmod +x /root/iaas-install-glance.sh
+    bash /root/iaas-install-glance.sh
+'
 
-# --- 创建并执行 iaas-install-placement.sh ---
-log "Installing Placement..."
-
-cat > /root/iaas-install-placement.sh << 'EOF'
+# --- Placement 安装 ---
+run_step "安装 Placement 资源跟踪服务" bash -c '
+    cat > /root/iaas-install-placement.sh << '\''EOF'\''
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
 
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE placement;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'localhost' IDENTIFIED BY '$PLACEMENT_DBPASS';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO 'placement'@'%' IDENTIFIED BY '$PLACEMENT_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO '\''placement'\''@'\''localhost'\'' IDENTIFIED BY '\''$PLACEMENT_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON placement.* TO '\''placement'\''@'\''%'\'' IDENTIFIED BY '\''$PLACEMENT_DBPASS'\'';"
 
 openstack user create --domain $DOMAIN_NAME --password $PLACEMENT_PASS placement
 openstack role add --project service --user placement admin
@@ -326,13 +352,13 @@ su -s /bin/sh -c "placement-manage db sync" placement
 systemctl restart httpd
 EOF
 
-chmod +x /root/iaas-install-placement.sh
-bash /root/iaas-install-placement.sh
+    chmod +x /root/iaas-install-placement.sh
+    bash /root/iaas-install-placement.sh
+'
 
-# --- 创建并执行 iaas-install-nova-controller.sh ---
-log "Installing Nova..."
-
-cat > /root/iaas-install-nova-controller.sh << 'EOF'
+# --- Nova 安装 ---
+run_step "安装 Nova 计算服务" bash -c '
+    cat > /root/iaas-install-nova-controller.sh << '\''EOF'\''
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
@@ -340,12 +366,12 @@ source /etc/keystone/admin-openrc.sh
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS nova;"
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS nova_api;"
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS nova_cell0;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'localhost' IDENTIFIED BY '$NOVA_DBPASS';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO 'nova'@'%' IDENTIFIED BY '$NOVA_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO '\''nova'\''@'\''localhost'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova.* TO '\''nova'\''@'\''%'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO '\''nova'\''@'\''localhost'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_api.* TO '\''nova'\''@'\''%'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO '\''nova'\''@'\''localhost'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON nova_cell0.* TO '\''nova'\''@'\''%'\'' IDENTIFIED BY '\''$NOVA_DBPASS'\'';"
 
 openstack user create --domain $DOMAIN_NAME --password $NOVA_PASS nova
 openstack role add --project service --user nova admin
@@ -428,20 +454,20 @@ chmod +x /root/nova-service-restart.sh
 bash /root/nova-service-restart.sh
 EOF
 
-chmod +x /root/iaas-install-nova-controller.sh
-bash /root/iaas-install-nova-controller.sh
+    chmod +x /root/iaas-install-nova-controller.sh
+    bash /root/iaas-install-nova-controller.sh
+'
 
-# --- 创建并执行 iaas-install-neutron-controller.sh ---
-log "Installing Neutron..."
-
-cat > /root/iaas-install-neutron-controller.sh << 'EOF'
+# --- Neutron 安装 ---
+run_step "安装 Neutron 网络服务" bash -c '
+    cat > /root/iaas-install-neutron-controller.sh << '\''EOF'\''
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
 
 mysql -uroot -p$DB_PASS -e "CREATE DATABASE IF NOT EXISTS neutron;"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'localhost' IDENTIFIED BY '$NEUTRON_DBPASS';"
-mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO 'neutron'@'%' IDENTIFIED BY '$NEUTRON_DBPASS';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO '\''neutron'\''@'\''localhost'\'' IDENTIFIED BY '\''$NEUTRON_DBPASS'\'';"
+mysql -uroot -p$DB_PASS -e "GRANT ALL PRIVILEGES ON neutron.* TO '\''neutron'\''@'\''%'\'' IDENTIFIED BY '\''$NEUTRON_DBPASS'\'';"
 
 openstack user create --domain $DOMAIN_NAME --password $NEUTRON_PASS neutron
 openstack role add --project service --user neutron admin
@@ -452,7 +478,6 @@ openstack endpoint create --region RegionOne network admin http://$HOST_NAME:969
 
 yum install -y openstack-neutron openstack-neutron-linuxbridge ebtables ipset openstack-neutron-ml2
 
-# 网卡配置（仅当未配置时）
 if ! ip a show "$INTERFACE_NAME" | grep -q "$HOST_IP"; then
 cat > /etc/sysconfig/network-scripts/ifcfg-$INTERFACE_NAME << EOF2
 DEVICE=$INTERFACE_NAME
@@ -553,10 +578,10 @@ metadata_proxy_shared_secret = $METADATA_SECRET
 eoff
 
 modprobe br_netfilter
-echo 'net.ipv4.conf.all.rp_filter=0' >> /etc/sysctl.conf
-echo 'net.ipv4.conf.default.rp_filter=0' >> /etc/sysctl.conf
-echo 'net.bridge.bridge-nf-call-iptables = 1' >> /etc/sysctl.conf
-echo 'net.bridge.bridge-nf-call-ip6tables = 1' >> /etc/sysctl.conf
+echo "net.ipv4.conf.all.rp_filter=0" >> /etc/sysctl.conf
+echo "net.ipv4.conf.default.rp_filter=0" >> /etc/sysctl.conf
+echo "net.bridge.bridge-nf-call-iptables = 1" >> /etc/sysctl.conf
+echo "net.bridge.bridge-nf-call-ip6tables = 1" >> /etc/sysctl.conf
 sysctl -p
 
 ln -sf /etc/neutron/plugins/ml2/ml2_conf.ini /etc/neutron/plugin.ini
@@ -573,13 +598,13 @@ chmod +x /root/neutron-service-restart.sh
 bash /root/neutron-service-restart.sh
 EOF
 
-chmod +x /root/iaas-install-neutron-controller.sh
-bash /root/iaas-install-neutron-controller.sh
+    chmod +x /root/iaas-install-neutron-controller.sh
+    bash /root/iaas-install-neutron-controller.sh
+'
 
-# --- 创建并执行 iaas-install-horizon.sh ---
-log "Installing Horizon..."
-
-cat > /root/iaas-install-horizon.sh << 'EOF'
+# --- Horizon 安装 ---
+run_step "安装 Horizon Web 控制台" bash -c '
+    cat > /root/iaas-install-horizon.sh << '\''EOF'\''
 #!/bin/bash
 source /root/openrc.sh
 source /etc/keystone/admin-openrc.sh
@@ -587,9 +612,9 @@ source /etc/keystone/admin-openrc.sh
 yum install -y openstack-dashboard
 
 cp /etc/openstack-dashboard/local_settings{,.bak}
-sed -i "s/OPENSTACK_HOST = .*/OPENSTACK_HOST = '$HOST_NAME'/" /etc/openstack-dashboard/local_settings
-sed -i "s/ALLOWED_HOSTS = .*/ALLOWED_HOSTS = ['*', ]/" /etc/openstack-dashboard/local_settings
-sed -i "104s/.*/SESSION_ENGINE = 'django.contrib.sessions.backends.cache'/" /etc/openstack-dashboard/local_settings
+sed -i "s/OPENSTACK_HOST = .*/OPENSTACK_HOST = '\''$HOST_NAME'\''/" /etc/openstack-dashboard/local_settings
+sed -i "s/ALLOWED_HOSTS = .*/ALLOWED_HOSTS = ['\''*'\'' , ]/" /etc/openstack-dashboard/local_settings
+sed -i "104s/.*/SESSION_ENGINE = '\''django.contrib.sessions.backends.cache'\''/" /etc/openstack-dashboard/local_settings
 cat >> /etc/openstack-dashboard/local_settings << EOFF
 
 OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
@@ -603,23 +628,36 @@ OPENSTACK_API_VERSIONS = {
 }
 
 CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
-        'LOCATION': 'controller:11211',
+    "default": {
+        "BACKEND": "django.core.cache.backends.memcached.MemcachedCache",
+        "LOCATION": "controller:11211",
     }
 }
 EOFF
 
-sed -i "147s/.*/TIME_ZONE = 'Asia\/Shanghai'/" /etc/openstack-dashboard/local_settings
+sed -i "147s/.*/TIME_ZONE = '\''Asia\/Shanghai'\''/" /etc/openstack-dashboard/local_settings
 
 systemctl restart httpd memcached
 EOF
 
-chmod +x /root/iaas-install-horizon.sh
-bash /root/iaas-install-horizon.sh
+    chmod +x /root/iaas-install-horizon.sh
+    bash /root/iaas-install-horizon.sh
+'
 
-# --- 完成提示 ---
+# ==============================
+# 最终总结
+# ==============================
+echo ""
 echo "###############################################################"
-echo "#################      集群初始化成功     #####################"
+if [ ${#ERRORS[@]} -eq 0 ]; then
+    echo "✅ 所有组件安装成功！"
+    log "All services installed successfully."
+else
+    echo "⚠️ 以下步骤执行失败，请检查日志："
+    for err in "${ERRORS[@]}"; do
+        echo "  - $err"
+    done
+    log "部分服务安装失败，详见上述错误。"
+fi
+echo "日志文件：$LOG_FILE"
 echo "###############################################################"
-log "All services installed successfully."
