@@ -10,6 +10,50 @@
 
 
 # --- 配置区 ---
+# --- 更换为阿里云 Yum 源 ---
+run_step "配置阿里云 Yum 源" bash -c '
+# 备份原始 repo 文件
+mkdir -p /etc/yum.repos.d/bak
+mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/bak/ 2>/dev/null || true
+
+# 根据系统发行版自动选择阿里云源
+OS_RELEASE=$(grep "^ID=" /etc/os-release | cut -d"=" -f2 | tr -d "\"")
+OS_VERSION=$(grep "^VERSION_ID=" /etc/os-release | cut -d"=" -f2 | tr -d "\"")
+
+case "$OS_RELEASE" in
+  "centos"|"rocky"|"almalinux")
+    if [[ "$OS_VERSION" =~ ^8 ]]; then
+      curl -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-vault-8.5.2111.repo
+      sed -i "s/mirrorlist/#mirrorlist/g" /etc/yum.repos.d/CentOS-Base.repo
+      sed -i "s|#baseurl=http://mirror.centos.org|baseurl=https://mirrors.aliyun.com|g" /etc/yum.repos.d/CentOS-Base.repo
+    elif [[ "$OS_VERSION" =~ ^7 ]]; then
+      curl -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-7.repo
+    else
+      echo "不支持的 CentOS 版本: $OS_VERSION"
+      exit 1
+    fi
+    ;;
+  "openeuler")
+    if [[ "$OS_VERSION" =~ ^20 ]]; then
+      curl -o /etc/yum.repos.d/openEuler.repo https://mirrors.aliyun.com/openeuler/20.03_LTS/OS/aarch64/openEuler.repo
+    elif [[ "$OS_VERSION" =~ ^22 ]]; then
+      curl -o /etc/yum.repos.d/openEuler.repo https://mirrors.aliyun.com/openeuler/22.03_LTS/OS/x86_64/openEuler.repo
+    elif [[ "$OS_VERSION" =~ ^24 ]]; then
+      curl -o /etc/yum.repos.d/openEuler.repo https://mirrors.aliyun.com/openeuler/24_LTS/OS/x86_64/openEuler.repo
+    else
+      echo "不支持的 openEuler 版本: $OS_VERSION"
+      exit 1
+    fi
+    ;;
+  *)
+    echo "未知系统: $OS_RELEASE，跳过更换源"
+    ;;
+esac
+
+# 清理并重建缓存
+yum clean all
+yum makecache
+'
 # 自动获取网络配置信息
 echo "正在检测网络接口..."
 INTERFACES=($(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|ens|eno|enp|wlan)' | head -10))
