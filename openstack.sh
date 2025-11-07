@@ -1417,6 +1417,8 @@ if ! openstack token issue &> /dev/null; then
     ERROR_LOG+=("[keystone初始化] keystone bootstrap 失败")
 fi
 
+fi
+
 echo "ServerName $HOST_NAME" >> /etc/httpd/conf/httpd.conf 2>/dev/null || echo "警告: 添加 ServerName 失败"
 ln -s /usr/share/keystone/wsgi-keystone.conf /etc/httpd/conf.d/ 2>/dev/null || echo "警告: 创建符号链接失败"
 systemctl enable --now httpd 2>/dev/null || echo "警告: httpd 服务启动失败"
@@ -1442,7 +1444,6 @@ EOF
         echo "警告: python3-openstackclient 安装失败"
         ERROR_LOG+=("[keystone安装] python3-openstackclient 安装失败")
     fi
-fi
 
 # 安装glance服务
 echo "安装glance服务..."
