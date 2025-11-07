@@ -14,3 +14,5 @@
 采用 BY-NC-SA 许可协议。转载请注明出处！https://creativecommons.org/licenses/by-nc-sa/4.0/
 
 测试基于ESXI7.9虚拟机，单网卡ens33，IP192.168.1.204，最小化安装，OpenEuler22.03 LST SP4
+
+已知BUG：进度条不准还在调
