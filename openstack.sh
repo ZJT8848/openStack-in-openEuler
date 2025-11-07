@@ -748,6 +748,36 @@ if (grep -q "openEuler" /etc/os-release && command -v dnf > /dev/null && dnf ins
         # 检查每个认证方法是否都已正确配置
         AUTH_METHODS=("password" "token" "external" "oauth1" "application_credential")
         for method in "${AUTH_METHODS[@]}"; do
+            if [[ "$method" == "password" ]]; then
+                if ! grep -q "^$method = keystone.auth.password.Password" /etc/keystone/keystone.conf; then
+                    echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                    ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+                fi
+            elif [[ "$method" == "token" ]]; then
+                if ! grep -q "^$method = keystone.auth.token.Token" /etc/keystone/keystone.conf; then
+                    echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                    ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+                fi
+            elif [[ "$method" == "external" ]]; then
+                if ! grep -q "^$method = keystone.auth.external.DefaultDomain" /etc/keystone/keystone.conf; then
+                    echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                    ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+                fi
+            elif [[ "$method" == "oauth1" ]]; then
+                if ! grep -q "^$method = keystone.auth.oauth1.OAuth" /etc/keystone/keystone.conf; then
+                    echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                    ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+                fi
+            elif [[ "$method" == "application_credential" ]]; then
+                if ! grep -q "^$method = keystone.auth.application_credential.ApplicationCredential" /etc/keystone/keystone.conf; then
+                    echo -e "\033[31m错误: keystone.conf中缺少 $method 认证方法配置\033[0m"
+                    ERROR_LOG+=("[配置验证] keystone.conf中缺少 $method 认证方法配置")
+                fi
+            fi
+        done
+    fi
+fi
+
 # 修复Keystone配置文件函数
 fix_keystone_config() {
     echo "修复Keystone配置文件以解决编码和插件加载问题..."
@@ -1005,7 +1035,7 @@ if command -v keystone-manage &> /dev/null; then
     fi
 
     keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone || \
-        echo "警告: keystone fernet 设置失败，继续执行" && ERROR_LOG+=("[keystone初始化] keystone fernet 设置失败")
+        { echo "警告: keystone fernet 设置失败，继续执行" ; ERROR_LOG+=("[keystone初始化] keystone fernet 设置失败") ; }
 else
     echo "警告: keystone-manage 命令未找到，继续执行"
     ERROR_LOG+=("[keystone安装] keystone-manage 命令未找到")
@@ -2621,5 +2651,4 @@ if [ ${#ERROR_LOG[@]} -gt 0 ]; then
     
     echo -e "\n\033[33m脚本已执行完成，但存在上述错误，请检查并修复\033[0m"
     # 不退出，继续执行
-fi
 fi
