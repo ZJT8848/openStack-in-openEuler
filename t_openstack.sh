@@ -1,12 +1,18 @@
 #!/bin/bash
 
-# ==============================
-# OpenStack Train All-in-One 自动化部署脚本（带进度提示 + 中文错误汇总）
-# 适配 openEuler / CentOS 7/8/9
-# ==============================
+# ==========================================================================
+# 脚本作者： ZJT8848,链接：https://github.com/ZJT8848/openStack-in-openEuler
+# 部分代码来源：作者 huhy,链接：https://www.cnblogs.com/hoyeong/p/18793119
+# OpenStack In OpenEuler 自动化部署脚本
+# 理论上适配 openEuler20/22/224/25  /  CentOS 7/8/9
+# OpenStack22.02 LTS SP4实测脚本没问题
+# ==========================================================================
+
 
 # --- 配置区 ---
 # 自动获取网络配置信息
+
+
 echo "正在检测网络接口..."
 INTERFACES=($(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|ens|eno|enp|wlan)' | head -10))
 
@@ -61,7 +67,7 @@ LOG_FILE="/root/init.log"
 ERRORS=()  # 用于收集错误步骤
 
 # 进度条相关变量
-TOTAL_STEPS=20
+TOTAL_STEPS=16
 CURRENT_STEP=0
 
 # 显示进度条的函数
@@ -99,10 +105,11 @@ error() {
 }
 
 # --- 欢迎界面 ---
-cat > /etc/motd <<EOF
-################################
-#    Welcome  to  openstack    #
-################################
+cat > /etc/motd <<EOF 
+ ################################
+ #    Welcome  to  openstack    #
+ #  https://github.com/ZJT8848  #
+ ################################
 EOF
 
 # ==============================
