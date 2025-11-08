@@ -41,7 +41,7 @@
 
              curl -sSL https://raw.githubusercontent.com/ZJT8848/openStack-in-openEuler/main/t_openstack.sh | bash
 
-Bata版方式一：Git 克隆安装（推荐）（代码一键执行即可）
+Bata版方式：Git 克隆安装（推荐）（代码一键执行即可）
 
              yum install -y git && git clone https://github.com/ZJT8848/openStack-in-openEuler.git /tmp/openstack && bash /tmp/openstack/t_openstack_bata.sh
 
