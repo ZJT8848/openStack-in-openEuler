@@ -72,6 +72,7 @@ CPU	4 核
 💾 Bata版（卷服务）：需额外添加一张 50GB 的硬盘（用于 Cinder 存储卷）
 
 ⚠️ 注意事项
+   环境： source /etc/keystone/admin-openrc.sh
 
 🌙 夜间 21:00 - 03:00 为网络高延迟期，可能导致 yum 下载失败，请尽量避开！
 
