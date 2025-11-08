@@ -110,8 +110,10 @@ http://<你的IP>/dashboard
 
 📦 致谢
 
-部分代码参考：huhy
+部分代码参考：huhy，链接 https://www.cnblogs.com/hoyeong/p/18793119"
+
 OpenStack 官方文档
+
 openEuler 社区
 
 🌟 让 OpenStack 在 openEuler 上飞起来！
