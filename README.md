@@ -69,7 +69,7 @@ CPU	4 核
 
 ✅ 标准版：仅需单盘，支持实例创建
 
-💾 Bata版（卷服务）：需额外添加一张 50GB 的硬盘（用于 Cinder 存储卷）<br>
+💾 Bata版（卷服务）：需额外添加一张 50GB 的硬盘（用于 Cinder 存储卷）<br><br>
 
 ⚠️ 注意事项
    环境： source /etc/keystone/admin-openrc.sh
@@ -80,7 +80,7 @@ CPU	4 核
 
 🔌 确保虚拟机有足够资源（CPU、内存、磁盘）
 
-🔐 openeuler24不一定能成功，如果卡在选择网卡循环，请更换ssh链接工具尝试<br>
+🔐 openeuler24不一定能成功，如果卡在选择网卡循环，请更换ssh链接工具尝试<br><br>
 
 🎨 安装完成后
 
