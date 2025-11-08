@@ -47,7 +47,7 @@ Bata版方式：Git 克隆安装（推荐）（代码一键执行即可）
 
              yum install -y git && git clone https://github.com/ZJT8848/openStack-in-openEuler.git /tmp/openstack && bash /tmp/openstack/t_openstack_bata.sh
 
-⚠️ 注意：Bata版开机或重启后需要手动执行sudo systemctl enable --now memcached
+⚠️ 注意：Bata版开机或重启后无法登录需要手动执行sudo systemctl enable --now memcached
 
 ⚡ 更轻量，适合快速测试！
 
