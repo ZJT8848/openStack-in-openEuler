@@ -977,6 +977,7 @@ echo "✅ Cinder 安装完成"
 
 
 # --- 重启 Horizon 以启用 Cinder 面板 ---
+systemctl enable --now memcached
 run_step "重启 Horizon 服务" systemctl restart httpd
 
 # ==============================
