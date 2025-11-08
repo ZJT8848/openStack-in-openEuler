@@ -1,5 +1,5 @@
 <div align="center">
-   <h1>🚀 OpenStack-in-openEuler：一键部署 OpenStack 的终极脚本</h1>
+   <h2>🚀 OpenStack-in-openEuler：一键部署 OpenStack 的终极脚本</h2>
 </div>
  
  为 openEuler 量身定制，全自动部署 OpenStack Train 版本
