@@ -82,7 +82,6 @@ cat > /etc/motd <<EOF
 ##################################
 #systemctl enable --now memcached#
 ##################################
-systemctl enable --now memcached
 EOF
 
 # ==============================
