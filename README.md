@@ -1,4 +1,4 @@
-🚀 OpenStack-in-openEuler：一键部署 OpenStack 的终极脚本
+             🚀 OpenStack-in-openEuler：一键部署 OpenStack 的终极脚本
  
  为 openEuler 量身定制，全自动部署 OpenStack Train 版本
  
