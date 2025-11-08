@@ -115,5 +115,3 @@ OpenStack 官方文档
 openEuler 社区
 
 🌟 让 OpenStack 在 openEuler 上飞起来！
-
-—— 由 ZJT8848 倾情打造，献给每一个热爱开源的你。
