@@ -3,6 +3,7 @@
 </div>
  
  为 openEuler 量身定制，全自动部署单节点 OpenStack 
+ 
  🔧 极简安装 · ⚡ 极速部署 
 
 <div align="center">
