@@ -34,10 +34,13 @@
  方式一：Git 克隆安装（推荐）
 
 yum install -y git && git clone https://github.com/ZJT8848/openStack-in-openEuler.git /tmp/openstack && bash /tmp/openstack/t_openstack.sh
+
 ⚠️ 注意：若出现 【处理 delta 中: 100% (2/2), 完成.】卡死，请按一次 回车 Enter 继续！
 
 方式二：Curl 直接执行（无 Git 环境）
+
 curl -sSL https://raw.githubusercontent.com/ZJT8848/openStack-in-openEuler/main/t_openstack.sh | bash
+
 ⚡ 更轻量，适合快速测试！
 
 🧪 标准测试环境
