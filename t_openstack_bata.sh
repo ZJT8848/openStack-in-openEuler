@@ -991,6 +991,7 @@ echo "用户名: admin"
 echo "密码: $ADMIN_PASS"
 echo "脚本作者： ZJT8848,链接： https://github.com/ZJT8848/openStack-in-openEuler"
 echo "部分代码来源：作者 huhy,链接 https://www.cnblogs.com/hoyeong/p/18793119"
+echo "Bata版开机或重启后需要手动执行sudo systemctl enable --now memcached"
 echo "###############################################################"
 if [ ${#ERRORS[@]} -eq 0 ]; then
     echo "✅ 所有组件安装成功！"
