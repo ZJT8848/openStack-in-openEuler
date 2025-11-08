@@ -1,4 +1,4 @@
-             🚀 OpenStack-in-openEuler：一键部署 OpenStack 的终极脚本
+🚀 OpenStack-in-openEuler：一键部署 OpenStack 的终极脚本
  
  为 openEuler 量身定制，全自动部署 OpenStack Train 版本
  
@@ -33,16 +33,16 @@
 
 普通版方式一：Git 克隆安装（推荐）（代码一键执行即可）
 
-yum install -y git && git clone https://github.com/ZJT8848/openStack-in-openEuler.git /tmp/openstack && bash /tmp/openstack/t_openstack.sh
+             yum install -y git && git clone https://github.com/ZJT8848/openStack-in-openEuler.git /tmp/openstack && bash /tmp/openstack/t_openstack.sh
 
 ⚠️ 注意：若出现 【处理 delta 中: 100% (2/2), 完成.】卡死，请按一次 回车 Enter 继续！
 
 普通版方式二：Curl 直接执行（无 Git 环境）（代码一键执行即可）
 
-curl -sSL https://raw.githubusercontent.com/ZJT8848/openStack-in-openEuler/main/t_openstack.sh | bash
+             curl -sSL https://raw.githubusercontent.com/ZJT8848/openStack-in-openEuler/main/t_openstack.sh | bash
 
 Bata版方式一：Git 克隆安装（推荐）（代码一键执行即可）
-yum install -y git && git clone https://github.com/ZJT8848/openStack-in-openEuler.git /tmp/openstack && bash /tmp/openstack/t_openstack_bata.sh
+             yum install -y git && git clone https://github.com/ZJT8848/openStack-in-openEuler.git /tmp/openstack && bash /tmp/openstack/t_openstack_bata.sh
 
 ⚠️ 注意：若出现 【处理 delta 中: 100% (2/2), 完成.】卡死，请按一次 回车 Enter 继续！
 
