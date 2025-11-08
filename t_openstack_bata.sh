@@ -2,7 +2,7 @@
 # 脚本作者： ZJT8848,链接：https://github.com/ZJT8848/openStack-in-openEuler
 # 部分代码来源：作者 huhy,链接：https://www.cnblogs.com/hoyeong/p/18793119
 # OpenStack In OpenEuler 自动化部署脚本
-# 理论上适配 openEuler20/22/
+# 理论上适配 openEuler20/22
 # OpenStack22.02 LTS SP4实测脚本没问题
 # ==========================================================================#
 
@@ -76,10 +76,13 @@ error() { ERRORS+=("$1"); log "⚠️ 错误: $1"; }
 
 # --- 欢迎界面 ---
 cat > /etc/motd <<EOF
-################################
-# Welcome to openstack #
-# https://github.com/ZJT8848 #
-################################
+##################################
+#      Welcome to openstack      #
+#   https://github.com/ZJT8848   #
+##################################
+#systemctl enable --now memcached#
+##################################
+systemctl enable --now memcached
 EOF
 
 # ==============================
