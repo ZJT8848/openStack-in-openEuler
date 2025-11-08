@@ -85,8 +85,6 @@ CPU	4 核
 
 http://<你的IP>/dashboard
 
-登录信息	内容
-
 用户名	admin
 
 密码	000000
