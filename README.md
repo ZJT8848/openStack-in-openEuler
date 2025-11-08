@@ -50,28 +50,47 @@ Bata版方式一：Git 克隆安装（推荐）（代码一键执行即可）
 ⚡ 更轻量，适合快速测试！
 
 🧪 标准测试环境
+
 项目	配置
+
 虚拟化平台	VMware ESXi 7.9 (VMware Workstation 12.5)
+
 操作系统	openEuler 22.03 LTS SP4（最小化安装）
+
 CPU	4 核
+
 内存	8 GB
+
 硬盘	100GB（单盘）
+
 网卡	ens33，静态 IP 192.168.1.204
+
 ✅ 标准版：仅需单盘，支持实例创建
 
 💾 Bata版（卷服务）：需额外添加 50GB 硬盘（用于 Cinder 存储卷）
 
 ⚠️ 注意事项
+
 🌙 夜间 21:00 - 03:00 为网络高延迟期，可能导致 yum 下载失败，请尽量避开！
+
 🖥️ 建议使用 静态 IP，避免 DHCP 导致网络配置错误
+
 🔌 确保虚拟机有足够资源（CPU、内存、磁盘）
+
 🔐 脚本会自动关闭 SELinux 和 firewalld
+
 🎨 安装完成后
+
 访问 Web 控制台：
+
 http://<你的IP>/dashboard
+
 登录信息	内容
+
 用户名	admin
+
 密码	000000
+
 🎉 恭喜！你的私有云已上线！
 
 📄 许可协议
@@ -84,12 +103,17 @@ http://<你的IP>/dashboard
 欢迎提交 Issue 或 Pull Request！
 
 🐞 发现 Bug？提个 Issue
+
 💡 有优化建议？欢迎 Fork & PR！
+
 📧 联系作者：ZJT8848（GitHub @ZJT8848）
+
 📦 致谢
+
 部分代码参考：huhy
 OpenStack 官方文档
 openEuler 社区
+
 🌟 让 OpenStack 在 openEuler 上飞起来！
 
 —— 由 ZJT8848 倾情打造，献给每一个热爱开源的你。
