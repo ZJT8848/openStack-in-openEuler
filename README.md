@@ -88,6 +88,8 @@ CPU	4 核
 
 http://<你的IP>/dashboard
 
+默认域：default
+
 用户名	admin
 
 密码	000000
